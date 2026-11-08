@@ -288,7 +288,12 @@ def make_caption(item, credit=None):
         )
     else:
         result += "\n🖼 Собственная новостная карточка, не фотография события"
-    return result[:1000]
+    # Не обрезаем HTML посередине тега <a>: Telegram отвечает 400.
+    # Ограничение Telegram (1024 символа) относится к видимому тексту,
+    # а не к длине URL внутри атрибута href.
+    if len(text_only(result)) > 950:
+        raise ValueError("Слишком длинная подпись для Telegram")
+    return result
 
 
 def send_post(item):
@@ -313,13 +318,21 @@ def send_post(item):
                 delay = min(30, int(response.json().get("parameters", {}).get("retry_after", 5)))
                 time.sleep(delay)
                 continue
-            response.raise_for_status()
-            if not response.json().get("ok"):
-                raise RuntimeError(response.text[:300])
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if not response.ok or not payload.get("ok"):
+                description = str(payload.get("description", "Ответ Telegram без описания ошибки"))
+                description = description.replace(BOT_TOKEN, "[TOKEN HIDDEN]")
+                raise RuntimeError(
+                    f"Telegram API вернул HTTP {response.status_code}: {description}. "
+                    "Проверь TELEGRAM_CHAT_ID, права бота и формат подписи."
+                )
             return
-        except (requests.RequestException, ValueError) as exc:
+        except requests.RequestException as exc:
             if attempt == 2:
-                raise RuntimeError(f"Telegram: публикация не удалась: {exc}") from exc
+                raise RuntimeError(f"Telegram: ошибка сети при отправке: {type(exc).__name__}") from exc
             time.sleep(3)
 
 
