@@ -17,7 +17,11 @@ from urllib.parse import quote, urlencode, urlparse
 
 import feedparser
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+import news_quality as quality
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "state.json"
@@ -31,6 +35,16 @@ MAX_AGE_HOURS = 8
 USER_AGENT = "TelegramNewsBot/1.0 (public news digest; contact via repository)"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT})
+# Retry transient RSS/Commons GET failures, but never automatically retry
+# Telegram POST requests: repeating a successful POST can duplicate a post.
+retry = Retry(
+    total=2, backoff_factor=0.7, status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset(("GET",))
+)
+adapter = HTTPAdapter(max_retries=retry)
+SESSION.mount("https://news.google.com/", adapter)
+SESSION.mount("https://commons.wikimedia.org/", adapter)
+SESSION.mount("https://upload.wikimedia.org/", adapter)
 
 # Google News RSS — бесплатная подборка заголовков. Не выдавать её за фактчекинг.
 QUERIES = [
@@ -133,62 +147,87 @@ def normalize(value):
     return re.sub(r"[^а-яёa-z0-9]+", " ", value.casefold()).strip()
 
 
-def allowed_source(source):
-    return bool(source) and any(name.casefold() in source.casefold() for name in PUBLISHERS)
-
-
-def classify(title):
-    lower = title.casefold()
-    if any(word in lower for word in ("слух", "неподтвержд", "не проверен", "предположительно")):
-        return "⚠️ Неподтверждённое сообщение"
-    if any(word in lower for word in ("заявил", "заявила", "сообщило минобороны", "по данным генштаба")):
-        return "📣 Заявление стороны"
-    return "📰 Сообщение СМИ (независимо не проверено)"
-
-
 def choose_news(entries, state):
     now = time.time()
-    already = {post["id"] for post in state["posts"] if "id" in post}
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    today_count = sum(1 for post in state["posts"] if post.get("date") == today)
-    limit = min(MAX_POSTS_PER_RUN, max(0, MAX_POSTS_PER_DAY - today_count))
-    if limit == 0:
-        print("Достигнут дневной лимит постов.")
+    history = [post for post in state["posts"] if isinstance(post, dict)]
+    already = {post.get("id") for post in history}
+    today_posts = [post for post in history if post.get("date") == today]
+    limit = min(MAX_POSTS_PER_RUN, max(0, MAX_POSTS_PER_DAY - len(today_posts)))
+    if limit <= 0:
+        print("Достигнут дневной лимит публикаций.")
         return []
+
+    # Keep enough history to prevent duplicate posts from different publishers
+    # within 24 hours, but allow genuinely recurring stories on later days.
+    recent_titles = [
+        post.get("title", "") for post in history
+        if post.get("title") and now - float(post.get("ts", 0)) < 24 * 3600
+    ]
+    daily_sources = {}
+    for post in today_posts:
+        key = (post.get("source") or "").casefold()
+        daily_sources[key] = daily_sources.get(key, 0) + 1
 
     candidates = []
     local_ids = set()
+    local_titles = []
+    rejected = {"source": 0, "topic": 0, "safety": 0, "age": 0, "duplicate": 0}
     for entry in entries:
         source = text_only(entry.get("source", {}).get("title", ""))
         title = text_only(entry.get("title", ""))
         if title.endswith(" - " + source):
             title = title[:-(len(source) + 3)].strip()
         link = entry.get("link", "")
-        if not allowed_source(source) or not title or not link.startswith("https://"):
+        if not quality.source_allowed(source, PUBLISHERS) or not title or not quality.valid_news_url(link):
+            rejected["source"] += 1
             continue
         lower = normalize(title)
         if not any(word in lower for word in RELEVANCE):
+            rejected["topic"] += 1
             continue
-        if any(word in lower for word in TACTICAL) or COORDINATES.search(title):
+        if not quality.is_safe_title(title):
+            rejected["safety"] += 1
             continue
         published = entry.get("published_parsed") or entry.get("updated_parsed")
         if not published:
+            rejected["age"] += 1
             continue
-        published_ts = calendar.timegm(published)
+        try:
+            published_ts = calendar.timegm(published)
+        except (ValueError, TypeError, OverflowError):
+            rejected["age"] += 1
+            continue
         age = now - published_ts
         if not (MIN_AGE_MINUTES * 60 <= age <= MAX_AGE_HOURS * 3600):
+            rejected["age"] += 1
             continue
-        article_id = hashlib.sha256((source.casefold() + "|" + lower).encode()).hexdigest()[:24]
+        article_id = hashlib.sha256(
+            (source.casefold() + "|" + lower).encode()
+        ).hexdigest()[:24]
         if article_id in already or article_id in local_ids:
+            rejected["duplicate"] += 1
+            continue
+        if daily_sources.get(source.casefold(), 0) >= 8:
+            rejected["duplicate"] += 1
+            continue
+        if any(quality.is_similar_story(title, previous) for previous in recent_titles):
+            rejected["duplicate"] += 1
+            continue
+        if any(quality.is_similar_story(title, previous) for previous in local_titles):
+            rejected["duplicate"] += 1
             continue
         local_ids.add(article_id)
+        local_titles.append(title)
         candidates.append({
             "id": article_id, "title": title, "source": source,
             "link": link, "published": published_ts,
-            "status": classify(title),
+            "status": quality.classify(title), "topic": quality.topic(title),
         })
     candidates.sort(key=lambda x: x["published"], reverse=True)
-    return candidates[:limit]
+    selected = quality.select_diverse(candidates, limit)
+    print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
+    return selected
 
 
 def image_category(title):
@@ -218,7 +257,9 @@ def commons_photo(title):
             meta = info.get("extmetadata", {})
             license_name = text_only(meta.get("LicenseShortName", {}).get("value", ""))
             license_lower = license_name.casefold()
-            if not any(x in license_lower for x in ("cc by", "cc0", "public domain")):
+            # Use only CC0/public-domain imagery to avoid automatic
+            # cropping/redistribution of photos with additional obligations.
+            if not any(x in license_lower for x in ("cc0", "public domain")):
                 continue
             image_url = info.get("thumburl") or info.get("url", "")
             host = urlparse(image_url).hostname or ""
@@ -273,7 +314,8 @@ def make_card(item):
     draw = ImageDraw.Draw(img)
     draw.rectangle((0, 0, 18, 675), fill="#dc6868")
     draw.rounded_rectangle((64, 57, 470, 119), radius=12, fill="#243950")
-    draw.text((88, 72), "НОВОСТНОЙ ДАЙДЖЕСТ", font=font(25, True), fill="#f0f4f8")
+    draw.text((88, 72), "ГОЛОС СВО · НОВОСТИ", font=font(25, True), fill="#f0f4f8")
+    draw.text((72, 137), item.get("topic", "События").upper(), font=font(24, True), fill="#a8d1e8")
     face = font(55, True)
     lines = wrap(draw, item["title"], face, 1070, 5)
     for i, line in enumerate(lines):
@@ -292,13 +334,15 @@ def make_caption(item, credit=None):
     source = html.escape(item["source"][:80])
     url = html.escape(item["link"], quote=True)
     published = datetime.fromtimestamp(item["published"], timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    topic = html.escape(item.get("topic", "События"))
     result = (
         f"<b>{title}</b>\n\n"
+        f"📌 {topic}\n"
         f"Источник сообщения: {source}. Автоматическая подборка заголовков; "
         f"изложенные сведения независимо не проверены.\n\n"
         f"{html.escape(item['status'])}\n"
         f"Опубликовано: {published}\n"
-        f'🔗 <a href="{url}">Читать первоисточник</a>'
+        f'🔗 <a href="{url}">Открыть публикацию</a>'
     )
     if credit:
         author, photo_url = credit
@@ -352,8 +396,9 @@ def send_post(item):
             return
         except requests.RequestException as exc:
             if attempt == 2:
-                raise RuntimeError(f"Telegram: ошибка сети при отправке: {type(exc).__name__}") from exc
+                raise RuntimeError(f"Telegram: ошибка сети при отправке: {type(exc).__name__}") from None
             time.sleep(3)
+    raise RuntimeError("Telegram: превышен лимит запросов, сообщение не отправлено.")
 
 
 def main():
@@ -361,10 +406,16 @@ def main():
         raise SystemExit("Настрой TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в GitHub Secrets.")
     state = get_state()
     now = time.time()
-    state["posts"] = [
-        x for x in state["posts"]
-        if isinstance(x, dict) and now - float(x.get("ts", 0)) < 30 * 86400
-    ]
+    recent_posts = []
+    for post in state["posts"]:
+        if not isinstance(post, dict):
+            continue
+        try:
+            if now - float(post.get("ts", 0)) < 30 * 86400:
+                recent_posts.append(post)
+        except (TypeError, ValueError):
+            continue
+    state["posts"] = recent_posts
     selected = choose_news(get_entries(), state)
     print(f"Подходящих новых сообщений: {len(selected)}; DRY_RUN={DRY_RUN}")
     if DRY_RUN:
@@ -375,7 +426,9 @@ def main():
         send_post(item)
         state["posts"].append({
             "id": item["id"], "ts": time.time(),
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "title": item["title"], "source": item["source"],
+            "topic": item["topic"],
         })
         # Сохраняем после каждого успешного поста.
         save_state(state)
