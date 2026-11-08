@@ -24,8 +24,8 @@ STATE_FILE = ROOT / "state.json"
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-MAX_POSTS_PER_RUN = 2
-MAX_POSTS_PER_DAY = 30
+MAX_POSTS_PER_RUN = 3
+MAX_POSTS_PER_DAY = 50
 MIN_AGE_MINUTES = 60
 MAX_AGE_HOURS = 8
 USER_AGENT = "TelegramNewsBot/1.0 (public news digest; contact via repository)"
@@ -34,33 +34,53 @@ SESSION.headers.update({"User-Agent": USER_AGENT})
 
 # Google News RSS — бесплатная подборка заголовков. Не выдавать её за фактчекинг.
 QUERIES = [
-    "Украина Россия фронт when:1d",
-    "Украина Россия обстрел беспилотники when:1d",
-    "Украина Россия переговоры when:1d",
-    "СВО Украина Россия события when:1d",
+    ("Украина Россия последние новости when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия фронт события when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия удары последствия when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия беспилотники ПВО when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия переговоры дипломатия when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия санкции помощь when:1d", "ru", "RU", "RU:ru"),
+    ("Украина Россия гуманитарная ситуация when:1d", "ru", "RU", "RU:ru"),
+    ("Ukraine Russia war latest when:1d", "en", "US", "US:en"),
+    ("Ukraine Russia strikes civilians infrastructure when:1d", "en", "US", "US:en"),
+    ("Ukraine Russia peace talks sanctions when:1d", "en", "US", "US:en"),
 ]
 
 # Отбор узнаваемых редакций, включая источники с разных сторон конфликта.
 # Их публикация не означает независимого подтверждения сообщения.
 PUBLISHERS = [
-    "Reuters", "Associated Press", "AP News", "BBC", "DW",
+    # Международные
+    "Reuters", "Associated Press", "AP News", "Agence France-Presse", "AFP",
+    "BBC", "DW", "Deutsche Welle", "France 24", "Euronews", "Al Jazeera",
+    "The Guardian", "The Independent", "The Kyiv Independent", "Kyiv Post",
+    "Financial Times", "Bloomberg", "CNN", "Sky News", "Politico",
+    "The Washington Post", "The New York Times", "NBC News", "ABC News",
+    "CBS News", "Axios", "The Wall Street Journal", "Le Monde",
+    "Der Spiegel", "Tagesschau", "Anadolu Agency", "NHK World",
+    # Российские и русскоязычные
     "РБК", "ТАСС", "Интерфакс", "Коммерсантъ", "Ведомости",
-    "Украинская правда", "РБК-Украина", "РБК-Україна",
-    "Суспільне", "Суспильне", "Укринформ", "Укрінформ",
-    "Радио Свобода", "Настоящее Время", "Медуза",
-    "Новая газета Европа", "The Moscow Times", "Euronews",
-    "РИА Новости", "Известия", "France 24", "УНИАН",
+    "РИА Новости", "Известия", "Лента.ру", "Газета.Ru", "Фонтанка",
+    "Медуза", "Новая газета Европа", "The Moscow Times", "Дождь",
+    "Радио Свобода", "Настоящее Время",
+    # Украинские
+    "Украинская правда", "Українська правда", "РБК-Украина", "РБК-Україна",
+    "Суспільне", "Суспильне", "Укринформ", "Укрінформ", "УНИАН", "УНІАН",
+    "Радіо Свобода", "ЛІГА.net", "Liga.net", "Главком",
 ]
 RELEVANCE = (
     "украин", "росси", "сво", "фронт", "донец", "харьков", "киев",
     "київ", "запорож", "беспилот", "дрон", "ракет", "обстрел",
     "взрыв", "атак", "войн", "переговор", "пво", "всу", "энергет",
+    "ukrain", "russia", "russian", "kyiv", "moscow", "drone", "missile",
+    "ceasefire", "zelensky", "putin", "sanction", "peace talks", "war",
 )
 # Не публикуем оперативные наводки, точные координаты и расположение подразделений.
 TACTICAL = (
     "координат", "геолокац", "местоположени подразделени",
     "дислокаци", "маршрут колонн", "точка запуска", "точка пуска",
     "местонахождени расчет", "наводк на цель", "позиции пво",
+    "coordinates", "geolocation", "troop positions",
+    "air defense positions", "launch site", "target coordinates",
 )
 COORDINATES = re.compile(r"\b\d{1,2}\.\d{4,}\s*[,;]\s*\d{1,3}\.\d{4,}\b")
 FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -94,9 +114,9 @@ def save_state(state):
 
 def get_entries():
     items = []
-    for query in QUERIES:
+    for query, language, country, edition in QUERIES:
         url = "https://news.google.com/rss/search?" + urlencode({
-            "q": query, "hl": "ru", "gl": "RU", "ceid": "RU:ru"
+            "q": query, "hl": language, "gl": country, "ceid": edition
         })
         try:
             response = SESSION.get(url, timeout=18)
