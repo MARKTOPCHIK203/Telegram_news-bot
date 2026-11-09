@@ -332,6 +332,7 @@ def choose_news(entries, state):
     selected = quality.select_diverse(candidates, limit)
     for item in selected:
         item["title"] = translate_headline(item["title"])
+        item["original_summary"] = item.get("summary", "")
         item["summary"] = translate_summary(item.get("summary", ""))
     print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
@@ -436,34 +437,54 @@ def make_card(item):
     return buf
 
 
+def news_hashtags(item):
+    """Compact topic-specific Telegram hashtags."""
+    topic = item.get("topic", "")
+    tags = ["#ГолосСВО", "#Новости"]
+    topic_tags = {
+        "Дипломатия": "#Переговоры",
+        "Энергетика": "#Энергетика",
+        "Гуманитарная ситуация": "#ГуманитарнаяПомощь",
+        "Международные события": "#МеждународныеНовости",
+        "События": "#Украина",
+    }
+    tag = topic_tags.get(topic, "#События")
+    if tag not in tags:
+        tags.append(tag)
+    return " ".join(tags)
+
+
 def make_caption(item, credit=None):
-    title = html.escape(item["title"][:230])
+    """Telegram editorial style; short original summary, not full article."""
+    title = html.escape(item["title"][:220])
     source = html.escape(item["source"][:80])
     url = html.escape(item["link"], quote=True)
-    topic = html.escape(item.get("topic", "События"))
-    label = html.escape(item["status"])
-    published = datetime.fromtimestamp(
-        item["published"], timezone.utc
-    ).strftime("%d.%m.%Y · %H:%M UTC")
-    summary = html.escape(item.get("summary", "")[:440])
-    details = (summary + "\n\n") if summary else ""
+    summary = (item.get("summary") or "").strip()
+    if summary and summary.casefold() == item["title"].casefold():
+        summary = ""
+    summary = html.escape(summary[:410])
+    details = f"{summary}\n\n" if summary else ""
+    label = item.get("status", "")
+    status_line = ""
+    if "Неподтвержд" in label:
+        status_line = "⚠️ Сообщение не подтверждено независимо.\n\n"
+    elif "Заявление" in label:
+        status_line = "📣 Это заявление источника, а не установленный факт.\n\n"
     result = (
-        f"🔴 <b>{topic.upper()}</b>\n\n"
-        f"<b>{title}</b>\n\n"
-        f"{details}"
-        f"🗞 <b>Источник:</b> {source}\n"
-        f"ℹ️ {label}\n"
-        f"🕒 {published}\n\n"
-        f'🔗 <a href="{url}">Читать материал</a>\n'
-        f"📢 @golos_svo_news"
+        f"⚡ <b>{title}</b>\n\n"
+        f"{details}{status_line}"
+        f'📰 <b>Источник:</b> <a href="{url}">{source}</a>\n'
+        f"{news_hashtags(item)}"
     )
-    if item.get("original_title") != item["title"]:
-        result += "\n🌐 Заголовок автоматически переведён с иностранного языка."
+    if item.get("original_title") != item["title"] or (
+        item.get("original_summary") and item.get("original_summary") != item.get("summary")
+    ):
+        result += "\n🌐 Автоматический перевод."
     if credit:
         author, photo_url = credit
         result += (
-            "\n📷 Архивная иллюстрация, не фото события: "
-            f'<a href="{html.escape(photo_url, quote=True)}">{html.escape(author[:90])}</a>'
+            "\n📷 Архивное фото, не снимок события: "
+            f'<a href="{html.escape(photo_url, quote=True)}">{html.escape(author[:70])}</a>'
         )
     if len(text_only(result)) > 950:
         raise ValueError("Слишком длинная подпись для Telegram")
@@ -471,6 +492,28 @@ def make_caption(item, credit=None):
 
 
 def send_post(item):
+    # Direct publisher feeds may provide a native Telegram link preview
+    # with the article's own image. Do not download/re-upload copyrighted photos.
+    if item.get("direct_feed") and quality.valid_news_url(item["link"]):
+        caption = make_caption(item)
+        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        try:
+            response = SESSION.post(api_url, json={
+                "chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
+                "link_preview_options": {
+                    "url": item["link"],
+                    "is_disabled": False,
+                    "show_above_text": True,
+                },
+            }, timeout=35)
+            payload = response.json()
+            if response.ok and payload.get("ok"):
+                return
+            print("Не удалось показать предпросмотр источника; использую карточку.")
+        except (requests.RequestException, ValueError):
+            # A network timeout could occur after a successful Telegram send.
+            # Do not blindly retry: this might duplicate a published item.
+            raise RuntimeError("Неизвестен результат отправки предпросмотра; повтор отключён.") from None
     photo = commons_photo(item["title"])
     if photo:
         image_file, credit, photo_url = photo
