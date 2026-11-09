@@ -183,18 +183,23 @@ def get_entries():
             print(f"RSS: {query}: {len(feed.entries)} материалов")
         except (requests.RequestException, ValueError) as exc:
             print(f"RSS недоступен: {query}: {exc}")
-    # Прямой RSS Медузы: не ждать индексации Google News.
-    try:
-        response = SESSION.get("https://meduza.io/rss/all", timeout=12)
-        response.raise_for_status()
-        direct = feedparser.parse(response.content)
-        for entry in direct.entries:
-            entry["source"] = {"title": "Медуза"}
-            entry["direct_feed"] = True
-        items.extend(direct.entries)
-        print(f"Медуза (прямой RSS): {len(direct.entries)} материалов")
-    except (requests.RequestException, ValueError) as exc:
-        print(f"Прямой RSS Медузы недоступен: {exc}")
+    # Прямые RSS-ленты: у них чаще бывают полноценные описания статей.
+    direct_feeds = [
+        ("Медуза", "https://meduza.io/rss/all"),
+        ("BBC News Русская служба", "https://feeds.bbci.co.uk/russian/rss.xml"),
+    ]
+    for publisher, feed_url in direct_feeds:
+        try:
+            response = SESSION.get(feed_url, timeout=12)
+            response.raise_for_status()
+            direct = feedparser.parse(response.content)
+            for entry in direct.entries:
+                entry["source"] = {"title": publisher}
+                entry["direct_feed"] = True
+            items.extend(direct.entries)
+            print(f"{publisher} (прямой RSS): {len(direct.entries)} материалов")
+        except (requests.RequestException, ValueError) as exc:
+            print(f"Прямой RSS {publisher} недоступен: {type(exc).__name__}")
     return items
 
 
