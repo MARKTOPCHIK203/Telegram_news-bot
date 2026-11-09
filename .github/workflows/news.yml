@@ -1,8 +1,8 @@
-name: Telegram news (every 10 minutes)
+name: Telegram news (every 5 minutes)
 
 on:
   schedule:
-    - cron: '3,13,23,33,43,53 * * * *'
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
