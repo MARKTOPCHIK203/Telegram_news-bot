@@ -173,6 +173,39 @@ def translate_headline(title):
     return title
 
 
+def extract_summary(entry, title):
+    """Use only RSS-provided description, never invent missing facts."""
+    raw = text_only(entry.get("summary") or entry.get("description") or "")
+    raw = re.sub(r"\s*Читать далее.*$", "", raw, flags=re.I).strip()
+    if not raw or raw.casefold() == title.casefold():
+        return ""
+    # Google News RSS descriptions often repeat linked headlines and HTML
+    # rather than containing a usable news summary.
+    if "news.google.com" in (entry.get("link") or ""):
+        return ""
+    if not quality.is_safe_title(raw):
+        return ""
+    if len(raw) < 65:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", raw)
+    short = " ".join(sentences[:3]).strip()
+    if len(short) > 440:
+        short = short[:440].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return short
+
+
+def translate_summary(summary):
+    if not summary or re.search(r"[а-яё]", summary, re.IGNORECASE):
+        return summary
+    try:
+        translated = GoogleTranslator(source="auto", target="ru").translate(summary)
+        if translated and len(translated) <= 700:
+            return translated.strip()
+    except Exception as exc:
+        print(f"Не удалось перевести описание: {type(exc).__name__}")
+    return summary
+
+
 def choose_news(entries, state):
     now = time.time()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -250,12 +283,14 @@ def choose_news(entries, state):
             "link": link, "published": published_ts,
             "status": quality.classify(title), "topic": quality.topic(title),
             "direct_feed": bool(entry.get("direct_feed")),
+            "summary": extract_summary(entry, title),
         })
     candidates.sort(key=lambda x: x["published"], reverse=True)
     # Prioritize fresh direct-feed updates without monopolizing the channel.
     selected = quality.select_diverse(candidates, limit)
     for item in selected:
         item["title"] = translate_headline(item["title"])
+        item["summary"] = translate_summary(item.get("summary", ""))
     print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
 
@@ -368,9 +403,12 @@ def make_caption(item, credit=None):
     published = datetime.fromtimestamp(
         item["published"], timezone.utc
     ).strftime("%d.%m.%Y · %H:%M UTC")
+    summary = html.escape(item.get("summary", "")[:440])
+    details = (summary + "\n\n") if summary else ""
     result = (
         f"🔴 <b>{topic.upper()}</b>\n\n"
         f"<b>{title}</b>\n\n"
+        f"{details}"
         f"🗞 <b>Источник:</b> {source}\n"
         f"ℹ️ {label}\n"
         f"🕒 {published}\n\n"
