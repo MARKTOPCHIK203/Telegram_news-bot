@@ -216,13 +216,12 @@ def translate_headline(title):
 
 
 def extract_summary(entry, title):
-    """Use only RSS-provided description, never invent missing facts."""
+    """Only substantive RSS descriptions; never manufacture context."""
     raw = text_only(entry.get("summary") or entry.get("description") or "")
     raw = re.sub(r"\s*Читать далее.*$", "", raw, flags=re.I).strip()
     if not raw or raw.casefold() == title.casefold():
         return ""
-    # Google News RSS descriptions often repeat linked headlines and HTML
-    # rather than containing a usable news summary.
+    # Google News embeds a list of links, not a trustworthy article synopsis.
     if "news.google.com" in (entry.get("link") or ""):
         return ""
     if not quality.is_safe_title(raw):
@@ -230,9 +229,9 @@ def extract_summary(entry, title):
     if len(raw) < 65:
         return ""
     sentences = re.split(r"(?<=[.!?])\s+", raw)
-    short = " ".join(sentences[:3]).strip()
-    if len(short) > 440:
-        short = short[:440].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    short = " ".join(sentences[:5]).strip()
+    if len(short) > 650:
+        short = short[:650].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
     return short
 
 
@@ -241,7 +240,7 @@ def translate_summary(summary):
         return summary
     try:
         translated = GoogleTranslator(source="auto", target="ru").translate(summary)
-        if translated and len(translated) <= 700:
+        if translated and len(translated) <= 1100:
             return translated.strip()
     except Exception as exc:
         print(f"Не удалось перевести описание: {type(exc).__name__}")
@@ -327,9 +326,12 @@ def choose_news(entries, state):
             "direct_feed": bool(entry.get("direct_feed")),
             "summary": extract_summary(entry, title),
         })
-    candidates.sort(key=lambda x: x["published"], reverse=True)
-    # Prioritize fresh direct-feed updates without monopolizing the channel.
-    selected = quality.select_diverse(candidates, limit)
+    # Favor informative direct-feed stories; don't flood the channel with
+    # headline-only Google News results when proper descriptions exist.
+    detailed = [item for item in candidates if len(item.get("summary", "")) >= 65]
+    pool = detailed if detailed else candidates
+    pool.sort(key=lambda x: x["published"], reverse=True)
+    selected = quality.select_diverse(pool, limit)
     for item in selected:
         item["title"] = translate_headline(item["title"])
         item["original_summary"] = item.get("summary", "")
@@ -462,8 +464,9 @@ def make_caption(item, credit=None):
     summary = (item.get("summary") or "").strip()
     if summary and summary.casefold() == item["title"].casefold():
         summary = ""
-    summary = html.escape(summary[:410])
+    summary = html.escape(summary[:650])
     details = f"{summary}\n\n" if summary else ""
+    event_time = datetime.fromtimestamp(item["published"], timezone.utc).strftime("%d.%m.%Y, %H:%M UTC")
     label = item.get("status", "")
     status_line = ""
     if "Неподтвержд" in label:
@@ -474,6 +477,7 @@ def make_caption(item, credit=None):
         f"⚡ <b>{title}</b>\n\n"
         f"{details}{status_line}"
         f'📰 <b>Источник:</b> <a href="{url}">{source}</a>\n'
+        f'🕒 <b>Опубликовано:</b> {event_time}\n'
         f"{news_hashtags(item)}"
     )
     if item.get("original_title") != item["title"] or (
@@ -486,8 +490,14 @@ def make_caption(item, credit=None):
             "\n📷 Архивное фото, не снимок события: "
             f'<a href="{html.escape(photo_url, quote=True)}">{html.escape(author[:70])}</a>'
         )
-    if len(text_only(result)) > 950:
-        raise ValueError("Слишком длинная подпись для Telegram")
+    if len(text_only(result)) > 1000:
+        # Keep essential details and attribution rather than fail the run.
+        excess = len(text_only(result)) - 990
+        if summary and excess > 0:
+            short = html.escape((item.get("summary") or "")[:max(90, 650-excess-30)])
+            result = result.replace(details, short + "…\n\n", 1)
+        if len(text_only(result)) > 1024:
+            raise ValueError("Слишком длинная подпись для Telegram")
     return result
 
 
@@ -514,13 +524,10 @@ def send_post(item):
             # A network timeout could occur after a successful Telegram send.
             # Do not blindly retry: this might duplicate a published item.
             raise RuntimeError("Неизвестен результат отправки предпросмотра; повтор отключён.") from None
-    photo = commons_photo(item["title"])
-    if photo:
-        image_file, credit, photo_url = photo
-        caption = make_caption(item, (credit, photo_url))
-    else:
-        image_file = make_card(item)
-        caption = make_caption(item)
+    # Commons search often returns the same unrelated landscape for many
+    # different events. Use a unique title-based branded graphic instead.
+    image_file = make_card(item)
+    caption = make_caption(item)
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     for attempt in range(3):
         image_file.seek(0)
