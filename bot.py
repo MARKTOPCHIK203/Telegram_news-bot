@@ -22,16 +22,17 @@ from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import news_quality as quality
+from deep_translator import GoogleTranslator
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "state.json"
 DRY_RUN = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-MAX_POSTS_PER_RUN = 3
-MAX_POSTS_PER_DAY = 50
-MIN_AGE_MINUTES = 60
-MAX_AGE_HOURS = 8
+MAX_POSTS_PER_RUN = 5
+MAX_POSTS_PER_DAY = 100
+MIN_AGE_MINUTES = 0
+MAX_AGE_HOURS = 12
 USER_AGENT = "TelegramNewsBot/1.0 (public news digest; contact via repository)"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT})
@@ -140,11 +141,36 @@ def get_entries():
             print(f"RSS: {query}: {len(feed.entries)} материалов")
         except (requests.RequestException, ValueError) as exc:
             print(f"RSS недоступен: {query}: {exc}")
+    # Прямой RSS Медузы: не ждать индексации Google News.
+    try:
+        response = SESSION.get("https://meduza.io/rss/all", timeout=12)
+        response.raise_for_status()
+        direct = feedparser.parse(response.content)
+        for entry in direct.entries:
+            entry["source"] = {"title": "Медуза"}
+            entry["direct_feed"] = True
+        items.extend(direct.entries)
+        print(f"Медуза (прямой RSS): {len(direct.entries)} материалов")
+    except (requests.RequestException, ValueError) as exc:
+        print(f"Прямой RSS Медузы недоступен: {exc}")
     return items
 
 
 def normalize(value):
     return re.sub(r"[^а-яёa-z0-9]+", " ", value.casefold()).strip()
+
+
+def translate_headline(title):
+    """Free best-effort Russian translation; original text if service fails."""
+    if re.search(r"[а-яё]", title, re.IGNORECASE):
+        return title
+    try:
+        translated = GoogleTranslator(source="auto", target="ru").translate(title)
+        if translated and len(translated) < 350:
+            return translated.strip()
+    except Exception as exc:
+        print(f"Перевод недоступен ({type(exc).__name__}), оставляю оригинал")
+    return title
 
 
 def choose_news(entries, state):
@@ -208,7 +234,7 @@ def choose_news(entries, state):
         if article_id in already or article_id in local_ids:
             rejected["duplicate"] += 1
             continue
-        if daily_sources.get(source.casefold(), 0) >= 8:
+        if daily_sources.get(source.casefold(), 0) >= 20:
             rejected["duplicate"] += 1
             continue
         if any(quality.is_similar_story(title, previous) for previous in recent_titles):
@@ -219,12 +245,15 @@ def choose_news(entries, state):
             continue
         local_ids.add(article_id)
         local_titles.append(title)
+        display_title = translate_headline(title)
         candidates.append({
-            "id": article_id, "title": title, "source": source,
+            "id": article_id, "title": display_title, "original_title": title, "source": source,
             "link": link, "published": published_ts,
             "status": quality.classify(title), "topic": quality.topic(title),
+            "direct_feed": bool(entry.get("direct_feed")),
         })
     candidates.sort(key=lambda x: x["published"], reverse=True)
+    # Prioritize fresh direct-feed updates without monopolizing the channel.
     selected = quality.select_diverse(candidates, limit)
     print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
@@ -333,28 +362,28 @@ def make_caption(item, credit=None):
     title = html.escape(item["title"][:230])
     source = html.escape(item["source"][:80])
     url = html.escape(item["link"], quote=True)
-    published = datetime.fromtimestamp(item["published"], timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
     topic = html.escape(item.get("topic", "События"))
+    label = html.escape(item["status"])
+    published = datetime.fromtimestamp(
+        item["published"], timezone.utc
+    ).strftime("%d.%m.%Y · %H:%M UTC")
     result = (
+        f"🔴 <b>{topic.upper()}</b>\n\n"
         f"<b>{title}</b>\n\n"
-        f"📌 {topic}\n"
-        f"Источник сообщения: {source}. Автоматическая подборка заголовков; "
-        f"изложенные сведения независимо не проверены.\n\n"
-        f"{html.escape(item['status'])}\n"
-        f"Опубликовано: {published}\n"
-        f'🔗 <a href="{url}">Открыть публикацию</a>'
+        f"🗞 <b>Источник:</b> {source}\n"
+        f"ℹ️ {label}\n"
+        f"🕒 {published}\n\n"
+        f'🔗 <a href="{url}">Читать материал</a>\n'
+        f"📢 @golos_svo_news"
     )
+    if item.get("original_title") != item["title"]:
+        result += "\n🌐 Заголовок автоматически переведён с иностранного языка."
     if credit:
         author, photo_url = credit
         result += (
-            f'\n📷 Иллюстративное архивное фото (не место события): '
+            "\n📷 Архивная иллюстрация, не фото события: "
             f'<a href="{html.escape(photo_url, quote=True)}">{html.escape(author[:90])}</a>'
         )
-    else:
-        result += "\n🖼 Собственная новостная карточка, не фотография события"
-    # Не обрезаем HTML посередине тега <a>: Telegram отвечает 400.
-    # Ограничение Telegram (1024 символа) относится к видимому тексту,
-    # а не к длине URL внутри атрибута href.
     if len(text_only(result)) > 950:
         raise ValueError("Слишком длинная подпись для Telegram")
     return result
@@ -433,7 +462,7 @@ def main():
         # Сохраняем после каждого успешного поста.
         save_state(state)
         print(f"Отправлено: {item['source']}: {item['title']}")
-        time.sleep(2)
+        time.sleep(0.5)
     save_state(state)
 
 
