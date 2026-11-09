@@ -245,9 +245,8 @@ def choose_news(entries, state):
             continue
         local_ids.add(article_id)
         local_titles.append(title)
-        display_title = translate_headline(title)
         candidates.append({
-            "id": article_id, "title": display_title, "original_title": title, "source": source,
+            "id": article_id, "title": title, "original_title": title, "source": source,
             "link": link, "published": published_ts,
             "status": quality.classify(title), "topic": quality.topic(title),
             "direct_feed": bool(entry.get("direct_feed")),
@@ -255,6 +254,8 @@ def choose_news(entries, state):
     candidates.sort(key=lambda x: x["published"], reverse=True)
     # Prioritize fresh direct-feed updates without monopolizing the channel.
     selected = quality.select_diverse(candidates, limit)
+    for item in selected:
+        item["title"] = translate_headline(item["title"])
     print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
 
