@@ -291,7 +291,7 @@ def choose_news(entries, state):
         if not any(word in lower for word in RELEVANCE):
             rejected["topic"] += 1
             continue
-        if not quality.is_safe_title(title):
+        if not quality.is_safe_title(title) or quality.needs_editor_review(title):
             rejected["safety"] += 1
             continue
         published = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -322,6 +322,10 @@ def choose_news(entries, state):
         if any(quality.is_similar_story(title, previous) for previous in local_titles):
             rejected["duplicate"] += 1
             continue
+        summary = extract_summary(entry, title)
+        if quality.needs_editor_review(summary):
+            rejected["safety"] += 1
+            continue
         local_ids.add(article_id)
         local_titles.append(title)
         candidates.append({
@@ -329,7 +333,7 @@ def choose_news(entries, state):
             "link": link, "published": published_ts,
             "status": quality.classify(title), "topic": quality.topic(title),
             "direct_feed": bool(entry.get("direct_feed")),
-            "summary": extract_summary(entry, title),
+            "summary": summary,
         })
     # Favor informative direct-feed stories; don't flood the channel with
     # headline-only Google News results when proper descriptions exist.
@@ -348,10 +352,25 @@ def choose_news(entries, state):
     if len(selected) < limit:
         remaining = [item for item in older if item["id"] not in {x["id"] for x in selected}]
         selected += quality.select_diverse(remaining, limit - len(selected))
+    checked = []
     for item in selected:
-        item["title"] = translate_headline(item["title"])
-        item["original_summary"] = item.get("summary", "")
-        item["summary"] = translate_summary(item.get("summary", ""))
+        original_title = item["title"]
+        original_summary = item.get("summary", "")
+        translated_title = translate_headline(original_title)
+        translated_summary = translate_summary(original_summary)
+        if not quality.russian_text_ok(translated_title) or (
+            translated_summary and not quality.russian_text_ok(translated_summary)
+        ):
+            print(f"Пропуск: перевод не прошёл проверку русского языка: {item['source']}")
+            continue
+        if quality.needs_editor_review(translated_title) or quality.needs_editor_review(translated_summary):
+            print(f"Пропуск: чувствительная тема для ручной проверки: {item['source']}")
+            continue
+        item["title"] = translated_title
+        item["original_summary"] = original_summary
+        item["summary"] = translated_summary
+        checked.append(item)
+    selected = checked
     print(f"Кандидатов: {len(candidates)}; свежих за 4 часа: {len(fresh)}; "
           f"выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
