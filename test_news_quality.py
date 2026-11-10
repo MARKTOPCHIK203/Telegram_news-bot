@@ -3,6 +3,7 @@ import unittest
 from news_quality import (
     classify, is_safe_title, is_similar_story, normalized_title,
     select_diverse, source_allowed, topic, valid_news_url,
+    needs_editor_review, russian_text_ok,
 )
 
 
@@ -38,6 +39,13 @@ class QualityTests(unittest.TestCase):
         self.assertIn("Неподтверждённое", classify("Неподтверждённые сообщения"))
         self.assertIn("Заявление", classify("Министр заявил о встрече"))
         self.assertEqual(topic("Новые мирные переговоры"), "Дипломатия")
+
+    def test_editorial_filter(self):
+        self.assertTrue(needs_editor_review("Сообщили о погибших мирных жителях"))
+        self.assertTrue(needs_editor_review("Civilian deaths reported"))
+        self.assertFalse(needs_editor_review("Обсуждаются новые мирные переговоры"))
+        self.assertTrue(russian_text_ok("Стороны обсудили новые условия переговоров"))
+        self.assertFalse(russian_text_ok("Russia and Ukraine discussed new peace talks"))
 
     def test_diversity(self):
         data = [
