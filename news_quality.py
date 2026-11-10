@@ -96,6 +96,30 @@ def valid_news_url(value):
     )
 
 
+
+# Sensitive casualty allegations require manual editorial review regardless of
+# which side is alleged to be responsible. Never silently rewrite the facts.
+REVIEW_TERMS = (
+    "мирных жител", "мирного жител", "гражданских лиц", "гражданское населени",
+    "погибл", "убит", "жертв", "ранен", "пострадавш", "жилой дом",
+    "жилых дом", "детей погиб", "дети погиб", "больниц", "роддом",
+    "civilian killed", "civilians killed", "civilian deaths", "killed civilians",
+    "casualties", "killed", "dead", "wounded", "residential building",
+    "hospital strike",
+)
+
+def needs_editor_review(value):
+    normalized = (value or "").casefold().replace("ё", "е")
+    return any(term in normalized for term in REVIEW_TERMS)
+
+
+def russian_text_ok(value):
+    """Reject English-only or substantially untranslated prose."""
+    value = value or ""
+    cyr = len(re.findall(r"[а-яё]", value, re.I))
+    latin_words = re.findall(r"\b[a-zA-Z]{3,}\b", value)
+    return cyr >= 8 and len(latin_words) <= max(2, cyr // 45)
+
 def classify(title):
     value = (title or "").casefold()
     if any(term in value for term in (
