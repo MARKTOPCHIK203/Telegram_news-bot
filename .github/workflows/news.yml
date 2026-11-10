@@ -1,10 +1,13 @@
 name: Telegram news (every 5 minutes)
 
 on:
-  # GitHub scheduled workflows are best-effort and may be delayed or skipped.
-  # Offset minutes avoid the busiest start-of-hour slot.
+  # Bootstrap the relay automatically when this workflow is updated.
+  push:
+    paths:
+      - '.github/workflows/news.yml'
+  # Fallback: GitHub may delay or drop schedule events; relay below is primary.
   schedule:
-    - cron: '4,9,14,19,24,29,34,39,44,49,54,59 * * * *'
+    - cron: '8,23,38,53 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -15,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: telegram-news
@@ -23,7 +27,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -58,3 +62,34 @@ jobs:
             git commit -m "Update published news history [skip ci]"
             git push
           fi
+      # GitHub's cron trigger can be dropped under load. After every successful
+      # live run we request the next run ourselves using the built-in token.
+      # Manual dry runs do not start the relay.
+      - name: Wait until next automatic check
+        if: success() && env.DRY_RUN != '1'
+        run: |
+          echo "Bot run finished. Next check will be requested in 4 minutes."
+          sleep 240
+      - name: Schedule the next check via GitHub API
+        if: success() && env.DRY_RUN != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error \
+              --connect-timeout 10 --max-time 30 \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              -d '{"ref":"main","inputs":{"dry_run":"false"}}' \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/news.yml/dispatches"; then
+              echo "Next automatic run requested (HTTP 204)."
+              exit 0
+            fi
+            echo "Dispatch attempt $attempt failed; retrying..."
+            sleep 10
+          done
+          echo "Could not request next run. Fallback cron remains active."
+          exit 1
