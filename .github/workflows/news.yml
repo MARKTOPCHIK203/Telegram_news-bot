@@ -47,9 +47,9 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Validate Python syntax
-        run: python -m compileall -q bot.py news_quality.py test_news_quality.py
+        run: python -m compileall -q bot.py news_quality.py article_preview.py test_news_quality.py test_article_preview.py
       - name: Run quality tests
-        run: python -m unittest -v test_news_quality.py
+        run: python -m unittest -v test_news_quality.py test_article_preview.py
       - name: Run bot
         run: python bot.py
       - name: Save published IDs
