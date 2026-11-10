@@ -1,8 +1,10 @@
 name: Telegram news (every 5 minutes)
 
 on:
+  # GitHub scheduled workflows are best-effort and may be delayed or skipped.
+  # Offset minutes avoid the busiest start-of-hour slot.
   schedule:
-    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+    - cron: '4,9,14,19,24,29,34,39,44,49,54,59 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -30,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: pip
