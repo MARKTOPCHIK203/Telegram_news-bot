@@ -32,7 +32,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 MAX_POSTS_PER_RUN = 5
 MAX_POSTS_PER_DAY = 100
 MIN_AGE_MINUTES = 0
-MAX_AGE_HOURS = 12
+MAX_AGE_HOURS = 30
 USER_AGENT = "TelegramNewsBot/1.0 (public news digest; contact via repository)"
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT})
@@ -333,15 +333,27 @@ def choose_news(entries, state):
         })
     # Favor informative direct-feed stories; don't flood the channel with
     # headline-only Google News results when proper descriptions exist.
-    detailed = [item for item in candidates if len(item.get("summary", "")) >= 65]
-    pool = detailed if detailed else candidates
-    pool.sort(key=lambda x: x["published"], reverse=True)
-    selected = quality.select_diverse(pool, limit)
+    # Do not starve fresh headline-only stories: choose by recency with a
+    # modest preference for RSS descriptions, never an absolute requirement.
+    candidates.sort(key=lambda x: x["published"], reverse=True)
+    recent_window = now - 4 * 3600
+    fresh = [item for item in candidates if item["published"] >= recent_window]
+    older = [item for item in candidates if item["published"] < recent_window]
+    def rank(item):
+        detail_bonus = 30 * 60 if len(item.get("summary", "")) >= 65 else 0
+        return item["published"] + detail_bonus
+    fresh.sort(key=rank, reverse=True)
+    older.sort(key=rank, reverse=True)
+    selected = quality.select_diverse(fresh, limit)
+    if len(selected) < limit:
+        remaining = [item for item in older if item["id"] not in {x["id"] for x in selected}]
+        selected += quality.select_diverse(remaining, limit - len(selected))
     for item in selected:
         item["title"] = translate_headline(item["title"])
         item["original_summary"] = item.get("summary", "")
         item["summary"] = translate_summary(item.get("summary", ""))
-    print(f"Кандидатов: {len(candidates)}; выбрано: {len(selected)}; отфильтровано: {rejected}")
+    print(f"Кандидатов: {len(candidates)}; свежих за 4 часа: {len(fresh)}; "
+          f"выбрано: {len(selected)}; отфильтровано: {rejected}")
     return selected
 
 
@@ -571,6 +583,8 @@ def main():
         raise SystemExit("Настрой TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в GitHub Secrets.")
     state = get_state()
     now = time.time()
+    print(f"Начало проверки: {datetime.now(timezone.utc).isoformat()}; "
+          f"режим: {'тест' if DRY_RUN else 'публикация'}", flush=True)
     recent_posts = []
     for post in state["posts"]:
         if not isinstance(post, dict):
@@ -600,6 +614,8 @@ def main():
         print(f"Отправлено: {item['source']}: {item['title']}")
         time.sleep(0.5)
     save_state(state)
+    print(f"Проверка завершена: {datetime.now(timezone.utc).isoformat()}; "
+          f"отправлено: {len(selected)}", flush=True)
 
 
 if __name__ == "__main__":
