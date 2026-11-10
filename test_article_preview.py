@@ -28,7 +28,7 @@ class ArticlePreviewTests(unittest.TestCase):
 
     def test_google_rpc_reply(self):
         inner = json.dumps(["garturlres", "https://www.bbc.com/russian/articles/abc"])
-        body = ")]}'\\n\\n" + json.dumps([
+        body = ")]}'\n\n" + json.dumps([
             ["wrb.fr", "Fbv4je", inner, None, None],
             ["di", 16],
         ])
@@ -36,13 +36,13 @@ class ArticlePreviewTests(unittest.TestCase):
             parse_google_response(body),
             "https://www.bbc.com/russian/articles/abc",
         )
-        self.assertIsNone(parse_google_response(")]}'\\n\\n[[\\"wrb.fr\\",\\"Fbv4je\\",null]]"))
+        self.assertIsNone(parse_google_response(")]}'\n\n[[\"wrb.fr\",\"Fbv4je\",null]]"))
 
     def test_resolve_constructs_google_request(self):
         inner = json.dumps(["garturlres", "https://news.example.org/story/7"])
         page = Mock(text='<div data-n-a-sg="mysignature" data-n-a-ts="1720000000">')
         page.raise_for_status = Mock()
-        rpc = Mock(text=")]}'\\n\\n" + json.dumps([["wrb.fr", "Fbv4je", inner]]))
+        rpc = Mock(text=")]}'\n\n" + json.dumps([["wrb.fr", "Fbv4je", inner]]))
         rpc.raise_for_status = Mock()
         http = Mock()
         http.get.return_value = page
