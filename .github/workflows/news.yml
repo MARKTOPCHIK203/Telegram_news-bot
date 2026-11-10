@@ -29,6 +29,11 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
     steps:
+      - name: Log trigger and schedule
+        run: |
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Scheduled expression: ${{ github.event.schedule }}"
+          date -u "+Runner UTC: %Y-%m-%d %H:%M:%S"
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
