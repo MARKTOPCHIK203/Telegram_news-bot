@@ -22,6 +22,7 @@ from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import news_quality as quality
+import article_preview
 from deep_translator import GoogleTranslator
 
 ROOT = Path(__file__).resolve().parent
@@ -538,30 +539,44 @@ def make_caption(item, credit=None):
 
 
 def send_post(item):
-    # Direct publisher feeds may provide a native Telegram link preview
-    # with the article's own image. Do not download/re-upload copyrighted photos.
+    # Use Telegram's publisher-native preview when possible. Google News RSS
+    # provides an aggregator link; resolve it to the original publisher page
+    # to show the story's own og:image without re-uploading copyrighted photos.
+    preview_link = None
     if item.get("direct_feed") and quality.valid_news_url(item["link"]):
+        preview_link = item["link"]
+    elif article_preview.google_article_id(item["link"]):
+        preview_link = article_preview.resolve_publisher_url(item["link"], SESSION)
+        if preview_link:
+            item["link"] = preview_link  # Attribute the actual publisher, not Google.
+            print(f"Оригинальная статья для предпросмотра: {preview_link[:150]}")
+        else:
+            print("Ссылка Google News не раскрылась; используется карточка.")
+
+    if preview_link:
         caption = make_caption(item)
         api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         try:
             response = SESSION.post(api_url, json={
                 "chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
                 "link_preview_options": {
-                    "url": item["link"],
+                    "url": preview_link,
                     "is_disabled": False,
+                    "prefer_large_media": True,
                     "show_above_text": True,
                 },
             }, timeout=35)
             payload = response.json()
             if response.ok and payload.get("ok"):
+                print(f"Опубликовано с предпросмотром оригинала: {item['source']}")
                 return
-            print("Не удалось показать предпросмотр источника; использую карточку.")
+            print("Telegram отклонил предпросмотр; использую фирменную карточку.")
         except (requests.RequestException, ValueError):
             # A network timeout could occur after a successful Telegram send.
             # Do not blindly retry: this might duplicate a published item.
             raise RuntimeError("Неизвестен результат отправки предпросмотра; повтор отключён.") from None
-    # Commons search often returns the same unrelated landscape for many
-    # different events. Use a unique title-based branded graphic instead.
+    # Never attach a generic stock image as if it documented this event.
+    # Fall back to a clearly branded title card when no article preview exists.
     image_file = make_card(item)
     caption = make_caption(item)
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
