@@ -71,10 +71,45 @@ def is_safe_title(title):
     )
 
 
+# Publisher names excluded from automatic publication by editorial preference.
+# Check this list BEFORE the broad allowlist: e.g. "РБК-Украина" would otherwise
+# be accepted through the prefix "РБК".
+EXCLUDED_PUBLISHERS = (
+    "Украинская правда", "Українська правда", "Ukrainska Pravda",
+    "РБК-Украина", "РБК-Україна", "RBC Ukraine",
+    "Суспільне", "Суспильне", "Suspilne", "Суспільне Новини",
+    "Укринформ", "Укрінформ", "Ukrinform",
+    "УНИАН", "УНІАН", "UNIAN",
+    "Радіо Свобода", "ЛІГА.net", "Liga.net", "Liga News",
+    "Главком", "Glavcom", "Громадське", "Hromadske",
+    "Цензор.НЕТ", "Censor.net", "Цензор НЕТ",
+    "NV", "NV.ua", "Новое время", "Новий час",
+    "Европейская правда", "Європейська правда", "European Pravda",
+    "Зеркало недели", "Дзеркало тижня", "ZN.UA",
+    "24 Канал", "24 канал", "24tv.ua",
+    "ТСН", "ТСН.ua", "TSN.ua",
+    "Обозреватель", "OBOZ.UA", "Обоз",
+    "Интерфакс-Украина", "Інтерфакс-Україна", "Interfax Ukraine",
+    "The Kyiv Independent", "Kyiv Post",
+)
+
+
+def excluded_publisher(source):
+    """Match publisher labels without blocking unrelated uses of 'Ukraine'."""
+    name = normalized_title(source)
+    if not name:
+        return False
+    for publisher in EXCLUDED_PUBLISHERS:
+        key = normalized_title(publisher)
+        if key and (name == key or name.startswith(key + " ") or name.endswith(" " + key)):
+            return True
+    return False
+
+
 def source_allowed(source, publisher_names):
     """Whole publisher name match; avoid partial matches such as AP in 'Snap'."""
     normalized = normalized_title(source)
-    if not normalized:
+    if not normalized or excluded_publisher(source):
         return False
     for publisher in publisher_names:
         key = normalized_title(publisher)
@@ -106,6 +141,12 @@ REVIEW_TERMS = (
     "civilian killed", "civilians killed", "civilian deaths", "killed civilians",
     "casualties", "killed", "dead", "wounded", "residential building",
     "hospital strike",
+    # Allegations about abuses by armed forces require human editorial review,
+    # regardless of which army is accused. This is not a truth judgment.
+    "обвин", "военн преступлен", "преступлен", "пытк", "мародер",
+    "изнасил", "расстрел", "зверств", "этническ чистк",
+    "war crime", "atrocit", "torture", "looting", "massacre",
+    "accused", "alleged abuse", "human rights violation",
 )
 
 def needs_editor_review(value):
