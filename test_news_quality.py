@@ -30,6 +30,24 @@ class QualityTests(unittest.TestCase):
         self.assertFalse(source_allowed("Snapchat", ["AP"]))
         self.assertFalse(source_allowed("Fake Reuters Clone", ["Reuters"]))
 
+    def test_excluded_ukrainian_publishers(self):
+        # Do not allow Ukrainian outlets through Russian prefix names.
+        self.assertFalse(source_allowed("РБК-Украина", ["РБК"]))
+        self.assertFalse(source_allowed("Интерфакс-Украина", ["Интерфакс"]))
+        self.assertFalse(source_allowed("The Kyiv Independent", ["The Kyiv Independent"]))
+        self.assertFalse(source_allowed("Суспільне Новини", ["Суспільне"]))
+        self.assertFalse(source_allowed("Украинская правда", ["Украинская правда"]))
+        self.assertTrue(source_allowed("РБК", ["РБК"]))
+        self.assertTrue(source_allowed("Интерфакс", ["Интерфакс"]))
+        self.assertTrue(source_allowed("Reuters", ["Reuters"]))
+
+    def test_sensitive_military_allegations(self):
+        # Same policy regardless of the army mentioned.
+        self.assertTrue(needs_editor_review("Российскую армию обвинили в преступлениях"))
+        self.assertTrue(needs_editor_review("Украинских военных обвинили в преступлениях"))
+        self.assertTrue(needs_editor_review("Military accused of war crimes"))
+        self.assertFalse(needs_editor_review("Стороны обсудили обмен пленными"))
+
     def test_sensitive_headlines(self):
         self.assertFalse(is_safe_title("Координаты цели 50.12345, 30.12345"))
         self.assertFalse(is_safe_title("Troop positions reported near city"))
