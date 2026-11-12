@@ -31,7 +31,7 @@ DRY_RUN = os.getenv("DRY_RUN", "0").lower() in ("1", "true", "yes")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 MAX_POSTS_PER_RUN = 5
-MAX_POSTS_PER_DAY = 100
+MAX_POSTS_PER_DAY = 180  # Moderate daily ceiling; previously 100 stopped publishing by evening.
 MIN_AGE_MINUTES = 0
 MAX_AGE_HOURS = 30
 USER_AGENT = "TelegramNewsBot/1.0 (public news digest; contact via repository)"
@@ -252,7 +252,7 @@ def choose_news(entries, state):
     today_posts = [post for post in history if post.get("date") == today]
     limit = min(MAX_POSTS_PER_RUN, max(0, MAX_POSTS_PER_DAY - len(today_posts)))
     if limit <= 0:
-        print("Достигнут дневной лимит публикаций.")
+        print(f"Достигнут дневной лимит публикаций: {len(today_posts)}/{MAX_POSTS_PER_DAY} (UTC).")
         return []
 
     # Keep enough history to prevent duplicate posts from different publishers
