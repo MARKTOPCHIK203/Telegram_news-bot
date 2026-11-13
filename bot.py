@@ -89,20 +89,13 @@ PUBLISHERS = [
     "Сиб.фм", "Тайга.инфо", "Проспект Мира", "Newslab",
     "Дела.ру", "КП-Красноярск", "Красноярск Онлайн",
     "Кубань 24", "Фонтанка.ру", "Петербургский дневник",
-    # Независимые и эмигрантские русскоязычные редакции
-    "Медуза", "Meduza", "Медиазона", "Mediazona",
-    "Новая газета", "Новая газета Европа", "Новая газета. Европа",
-    "The Moscow Times", "Дождь", "Телеканал Дождь",
-    "Настоящее Время", "Радио Свобода", "Радио Свобода / Radio Svoboda",
-    "Важные истории", "Истории", "Агентство", "Агентство. Новости",
-    "The Insider", "Инсайдер", "Верстка", "Вёрстка",
-    "Холод", "7x7", "7х7", "Сибирь.Реалии", "Кавказ.Реалии",
-    "Idel.Реалии", "Пепел", "ASTRA", "Астра", "Сота", "SOTA",
-    "Осторожно, новости", "ОВД-Инфо", "BBC News Русская служба",
-    "Русская служба Би-би-си", "DW на русском", "Deutsche Welle",
+    # Дополнительно допускаемые русскоязычные редакции.
+    # СМИ из стоп-листа news_quality.py не включаются в автоподборку.
+    "Осторожно, новости", "BBC News Русская служба",
+    "Русская служба Би-би-си",
     # Международные агентства и редакции
     "Reuters", "Associated Press", "AP News", "Agence France-Presse",
-    "AFP", "BBC", "BBC News", "DW", "France 24", "Euronews",
+    "AFP", "BBC", "BBC News", "France 24", "Euronews",
     "Al Jazeera", "The Guardian", "The Independent",
     "Financial Times",
     "Bloomberg", "CNN", "Sky News", "Politico", "POLITICO",
@@ -111,8 +104,7 @@ PUBLISHERS = [
     "Le Monde", "Der Spiegel", "Tagesschau", "Anadolu Agency",
     "NHK World", "Deutsche Presse-Agentur", "dpa",
     "The Economist", "The Telegraph", "The Times", "PBS",
-    "NPR", "RFE/RL", "Radio Free Europe/Radio Liberty",
-    "Bellingcat", "United Press International", "UPI",
+    "NPR", "United Press International", "UPI",
 ]
 RELEVANCE = (
     "украин", "росси", "сво", "фронт", "донец", "харьков", "киев",
