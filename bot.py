@@ -63,8 +63,6 @@ QUERIES = [
     # Additional discovery queries for Russian and independent publishers
     ("Украина Россия site:kommersant.ru OR site:vedomosti.ru OR site:rbc.ru when:1d", "ru", "RU", "RU:ru"),
     ("Украина Россия site:tass.ru OR site:interfax.ru OR site:ria.ru when:1d", "ru", "RU", "RU:ru"),
-    ("Украина Россия site:meduza.io OR site:zona.media OR site:novayagazeta.eu when:1d", "ru", "RU", "RU:ru"),
-    ("Украина Россия site:theins.ru OR site:istories.media OR site:themoscowtimes.com when:1d", "ru", "RU", "RU:ru"),
     ("Украина Россия Красноярск Сибирь when:1d", "ru", "RU", "RU:ru"),
     ("Ukraine Russia site:reuters.com OR site:apnews.com OR site:bbc.com when:1d", "en", "US", "US:en"),
 ]
@@ -175,9 +173,8 @@ def get_entries():
             print(f"RSS: {query}: {len(feed.entries)} материалов")
         except (requests.RequestException, ValueError) as exc:
             print(f"RSS недоступен: {query}: {exc}")
-    # Прямые RSS-ленты: у них чаще бывают полноценные описания статей.
+    # Прямые RSS только от разрешённых редакцией источников.
     direct_feeds = [
-        ("Медуза", "https://meduza.io/rss/all"),
         ("BBC News Русская служба", "https://feeds.bbci.co.uk/russian/rss.xml"),
     ]
     for publisher, feed_url in direct_feeds:
@@ -276,7 +273,9 @@ def choose_news(entries, state):
         if title.endswith(" - " + source):
             title = title[:-(len(source) + 3)].strip()
         link = entry.get("link", "")
-        if not quality.source_allowed(source, PUBLISHERS) or not title or not quality.valid_news_url(link):
+        if (not quality.source_allowed(source, PUBLISHERS)
+                or not title or not quality.valid_news_url(link)
+                or quality.blocked_media_url(link)):
             rejected["source"] += 1
             continue
         lower = normalize(title)
@@ -530,6 +529,10 @@ def make_caption(item, credit=None):
 
 
 def send_post(item):
+    # Final safeguard: never publish blocked sources even if selection changes.
+    if quality.blocked_publisher(item["source"]) or quality.blocked_media_url(item["link"]):
+        print(f"Пропуск запрещённого источника: {item['source']}")
+        return False
     # Use Telegram's publisher-native preview when possible. Google News RSS
     # provides an aggregator link; resolve it to the original publisher page
     # to show the story's own og:image without re-uploading copyrighted photos.
@@ -543,6 +546,10 @@ def send_post(item):
             print(f"Оригинальная статья для предпросмотра: {preview_link[:150]}")
         else:
             print("Ссылка Google News не раскрылась; используется карточка.")
+
+    if preview_link and quality.blocked_media_url(preview_link):
+        print(f"Пропуск: ссылка ведёт к исключённому СМИ: {item['source']}")
+        return False
 
     if preview_link:
         caption = make_caption(item)
@@ -560,7 +567,7 @@ def send_post(item):
             payload = response.json()
             if response.ok and payload.get("ok"):
                 print(f"Опубликовано с предпросмотром оригинала: {item['source']}")
-                return
+                return True
             print("Telegram отклонил предпросмотр; использую фирменную карточку.")
         except (requests.RequestException, ValueError):
             # A network timeout could occur after a successful Telegram send.
@@ -595,7 +602,7 @@ def send_post(item):
                     f"Telegram API вернул HTTP {response.status_code}: {description}. "
                     "Проверь TELEGRAM_CHAT_ID, права бота и формат подписи."
                 )
-            return
+            return True
         except requests.RequestException as exc:
             if attempt == 2:
                 raise RuntimeError(f"Telegram: ошибка сети при отправке: {type(exc).__name__}") from None
@@ -626,8 +633,11 @@ def main():
         for item in selected:
             print(f"[ПРОВЕРКА] {item['source']}: {item['title']}\n{item['link']}")
         return
+    posted_count = 0
     for item in selected:
-        send_post(item)
+        if not send_post(item):
+            continue
+        posted_count += 1
         state["posts"].append({
             "id": item["id"], "ts": time.time(),
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -640,7 +650,7 @@ def main():
         time.sleep(0.5)
     save_state(state)
     print(f"Проверка завершена: {datetime.now(timezone.utc).isoformat()}; "
-          f"отправлено: {len(selected)}", flush=True)
+          f"отправлено: {posted_count}", flush=True)
 
 
 if __name__ == "__main__":
