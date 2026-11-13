@@ -3,7 +3,7 @@ import unittest
 from news_quality import (
     classify, is_safe_title, is_similar_story, normalized_title,
     select_diverse, source_allowed, topic, valid_news_url,
-    needs_editor_review, russian_text_ok,
+    needs_editor_review, russian_text_ok, blocked_publisher, blocked_media_url,
 )
 
 
@@ -47,6 +47,40 @@ class QualityTests(unittest.TestCase):
         self.assertTrue(needs_editor_review("Украинских военных обвинили в преступлениях"))
         self.assertTrue(needs_editor_review("Military accused of war crimes"))
         self.assertFalse(needs_editor_review("Стороны обсудили обмен пленными"))
+
+    def test_registered_and_editorially_held_media(self):
+        for name in (
+            "Медуза", "Meduza", "Русская служба The Moscow Times",
+            "Медиазона", "Новая газета Европа", "The Insider",
+            "DW.com", "Радио Свобода", "Deutsche Welle",
+            "Важные истории", "Настоящее Время", "Вёрстка", "SOTA",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(blocked_publisher(name))
+                self.assertFalse(source_allowed(name, [name, "РБК", "BBC"]))
+        for name in ("ТАСС", "РБК", "Интерфакс", "BBC News Русская служба"):
+            with self.subTest(name=name):
+                self.assertFalse(blocked_publisher(name))
+                self.assertTrue(source_allowed(name, [name, "РБК", "BBC"]))
+
+    def test_blocked_media_domains(self):
+        for url in (
+            "https://meduza.io/news/abc",
+            "https://ru.themoscowtimes.com/article/abc",
+            "https://www.dw.com/ru/story",
+            "https://zona.media/article/abc",
+            "https://novayagazeta.eu/articles/123",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(blocked_media_url(url))
+        for url in (
+            "https://news.google.com/rss/articles/example",
+            "https://www.rbc.ru/politics/123",
+            "https://notmeduza.io/news",
+            "https://meduza.io.evil.example/abc",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(blocked_media_url(url))
 
     def test_sensitive_headlines(self):
         self.assertFalse(is_safe_title("Координаты цели 50.12345, 30.12345"))
