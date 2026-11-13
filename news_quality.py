@@ -106,10 +106,69 @@ def excluded_publisher(source):
     return False
 
 
+# Conservative opt-out list of publishers excluded from automatic posting
+# because of Russian foreign-agent / undesirable-organization registrations
+# or the channel owner's request for heightened legal caution. This is an
+# editorial denylist, NOT a definitive assertion of each entry's legal status.
+# Verify updates against the official Minjust registries periodically.
+# Source: https://www.minjust.gov.ru/ru/pages/reestr-inostryannykh-agentov/
+# Source: https://minjust.gov.ru/ru/pages/perechen-inostrannyh-i-mezhdunarodnyh-organizacij-deyatelnost-kotoryh-priznana-nezhelatelnoj-na-territorii-rossijskoj-federacii/
+BLOCKED_MEDIA_NAMES = (
+    "Медуза", "Meduza", "Medusa Project",
+    "Медиазона", "Mediazona",
+    "Новая газета", "Новая газета Европа", "Novaya Gazeta", "Novaya Gazeta Europe",
+    "The Moscow Times", "Русская служба The Moscow Times",
+    "Дождь", "Телеканал Дождь", "TV Rain",
+    "Настоящее Время", "Current Time", "Current Time TV",
+    "Радио Свобода", "Радио Свобода / Radio Svoboda",
+    "Radio Svoboda", "Radio Free Europe", "Radio Free Europe/Radio Liberty",
+    "RFE/RL", "Сибирь.Реалии", "Кавказ.Реалии", "Idel.Реалии",
+    "Север.Реалии", "Крым.Реалии", "Голос Америки", "Voice of America",
+    "Важные истории", "iStories",
+    "The Insider", "Инсайдер",
+    "Deutsche Welle", "DW на русском", "DW",
+    "Bellingcat", "ОВД-Инфо", "OVD-Info",
+    # Additional media temporarily withheld from automation for review.
+    "Вёрстка", "Верстка", "Verstka", "Холод", "Holod",
+    "7x7", "7х7", "SOTA", "Сота", "ASTRA", "Астра",
+    "Агентство", "Агентство. Новости", "Проект", "The Bell",
+)
+
+BLOCKED_MEDIA_DOMAINS = frozenset((
+    "meduza.io", "zona.media", "mediazona.org", "novayagazeta.ru",
+    "novayagazeta.eu", "themoscowtimes.com", "theins.ru",
+    "tvrain.tv", "tvrain.ru", "svoboda.org", "currenttime.tv",
+    "rferl.org", "rferl.ru", "dw.com", "istories.media",
+    "bellingcat.com", "ovd.info", "verstka.media", "holod.media",
+    "sota.vision", "astra.press", "thebell.io",
+))
+
+
+def blocked_publisher(source):
+    """Reject publisher aliases and 'Русская служба NAME' labels."""
+    name = normalized_title(source)
+    if not name:
+        return False
+    for entry in BLOCKED_MEDIA_NAMES:
+        key = normalized_title(entry)
+        if key and (name == key or name.startswith(key + " ") or name.endswith(" " + key)):
+            return True
+    return False
+
+
+def blocked_media_url(value):
+    try:
+        hostname = (urlparse(value or "").hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(hostname == domain or hostname.endswith("." + domain)
+               for domain in BLOCKED_MEDIA_DOMAINS)
+
+
 def source_allowed(source, publisher_names):
     """Whole publisher name match; avoid partial matches such as AP in 'Snap'."""
     normalized = normalized_title(source)
-    if not normalized or excluded_publisher(source):
+    if not normalized or excluded_publisher(source) or blocked_publisher(source):
         return False
     for publisher in publisher_names:
         key = normalized_title(publisher)
