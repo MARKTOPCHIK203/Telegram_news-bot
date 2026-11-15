@@ -114,15 +114,26 @@ def select_digest_stories(entries, allowed_sources, now=None):
     candidates.sort(key=lambda x: x["published"], reverse=True)
     chosen = []
     counts = {}
-    for item in candidates:
+
+    def add(item):
         if len(chosen) >= MAX_TOTAL_ITEMS:
-            break
+            return False
         if counts.get(item["category"], 0) >= MAX_ITEMS_PER_GROUP:
-            continue
+            return False
         if any(quality.is_similar_story(item["title"], prior["title"]) for prior in chosen):
-            continue
+            return False
         chosen.append(item)
         counts[item["category"]] = counts.get(item["category"], 0) + 1
+        return True
+
+    # Preserve both reported perspectives where eligible coverage exists.
+    # Never fabricate the missing side or loosen the channel's source bans.
+    for side in ("Российская сторона", "Украинская сторона"):
+        for candidate in candidates:
+            if candidate["side"] == side and add(candidate):
+                break
+    for item in candidates:
+        add(item)
     return chosen
 
 
@@ -153,16 +164,15 @@ def render_digest(items, now=None):
             source = html.escape(item["source"][:55])
             url = html.escape(item["link"], quote=True)
             parts.append(f'• <a href="{url}">{title}</a> — {source}')
-    mentioned_sides = {x["side"] for x in items if x["side"]}
-    parts.extend(("", "🧭 <b>Позиции сторон</b>"))
-    if "Российская сторона" in mentioned_sides:
-        parts.append("• Есть сообщения с заявлениями российской стороны (ссылки выше).")
-    else:
-        parts.append("• Отдельных сообщений с заявлениями российской стороны в этой подборке нет.")
-    if "Украинская сторона" in mentioned_sides:
-        parts.append("• Есть сообщения с заявлениями украинской стороны (ссылки выше).")
-    else:
-        parts.append("• Отдельных сообщений с заявлениями украинской стороны в этой подборке нет.")
+    parts.extend(("", "🧭 <b>Заявления сторон в публикациях</b>"))
+    for side in ("Российская сторона", "Украинская сторона"):
+        match = next((x for x in items if x["side"] == side), None)
+        if match:
+            title = html.escape(match["title"][:150])
+            url = html.escape(match["link"], quote=True)
+            parts.append(f'• {side}: <a href="{url}">{title}</a>')
+        else:
+            parts.append(f"• {side}: в разрешённых источниках недостаточно сведений.")
     parts.extend((
         "",
         "📌 <b>Итог</b>",
