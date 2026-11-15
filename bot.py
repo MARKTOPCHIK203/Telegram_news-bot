@@ -605,7 +605,7 @@ def send_post(item):
 
 
 def publish_daily_digest(entries, state):
-    """A once-per-day source-attributed report after local noon in Krasnoyarsk."""
+    """Once-per-day source-attributed report after 12:00 Moscow time."""
     if not daily_digest.due_for_digest(state):
         return False
     items = daily_digest.select_digest_stories(entries, PUBLISHERS)
