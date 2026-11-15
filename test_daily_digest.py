@@ -53,6 +53,27 @@ class DailyDigestTests(unittest.TestCase):
         self.assertNotIn("Медуза", text)
         self.assertNotIn("продвинулись", text)
 
+    def test_broad_official_briefings_both_sides_without_operational_details(self):
+        now = self.ts(12, 5)
+        entries = [
+            self.entry("Минобороны РФ представило общую оценку обстановки на фронте", "ТАСС", now - 20),
+            self.entry("Генштаб ВСУ сообщил об оценке военной обстановки", "Reuters", now - 30),
+            self.entry("Минобороны РФ заявило о продвижении войск", "РИА Новости", now - 40),
+            self.entry("Генштаб ВСУ сообщил об уничтожении танков", "Reuters", now - 50),
+        ]
+        items = select_digest_stories(entries, ["ТАСС", "Reuters", "РИА Новости"], now)
+        self.assertEqual(len(items), 2)
+        self.assertEqual({item["side"] for item in items},
+                         {"Российская сторона", "Украинская сторона"})
+        self.assertTrue(all(item["category"] == "Публичные заявления о военной обстановке"
+                            for item in items))
+        rendered = render_digest(items, now)
+        self.assertIn("по сообщению ТАСС", rendered)
+        self.assertIn("по сообщению Reuters", rendered)
+        self.assertIn("не гарантирует достоверности", rendered)
+        self.assertNotIn("продвижении", rendered)
+        self.assertNotIn("уничтожении", rendered)
+
     def test_no_sources_no_invented_report(self):
         self.assertIsNone(render_digest([]))
 
