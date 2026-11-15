@@ -93,7 +93,8 @@ def eligible(entry, allowed_sources, now):
     if not any(term in lower for term in DIPLOMACY + INTERNATIONAL + HUMANITARIAN + PUBLIC_BRIEFING):
         return None
     if not any(term in lower for term in ("украин", "росси", "рф", "киев", "зеленск",
-                                          "путин", "кремл", "сво", "конфликт", "войн")):
+                                          "путин", "кремл", "сво", "конфликт", "войн",
+                                          "всу", "генштаб", "минобороны", "военн")):
         return None
     published = entry.get("published_parsed") or entry.get("updated_parsed")
     if not published:
