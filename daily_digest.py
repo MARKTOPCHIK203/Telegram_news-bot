@@ -15,7 +15,7 @@ import news_quality as quality
 TZ = ZoneInfo("Asia/Krasnoyarsk")
 AGE_SECONDS = 26 * 60 * 60
 MAX_ITEMS_PER_GROUP = 3
-MAX_TOTAL_ITEMS = 8
+MAX_TOTAL_ITEMS = 9
 
 # The digest deliberately covers high-level political and humanitarian news.
 # Location-specific military movements are not suitable for autopublication.
@@ -31,14 +31,23 @@ HUMANITARIAN = (
     "гуманитар", "обмен плен", "пленных", "бежен", "эвакуац",
     "электроснабж", "энергосист", "восстановлен",
 )
+PUBLIC_BRIEFING = (
+    # Only broad public commentary, not combat operations or exact movements.
+    "минобороны", "военном ведомств", "военных ведомств", "генштаб",
+    "официальн сводк", "военной обстановк", "о ходе конфликта",
+    "обстановк на фронте", "боевых действиях", "ходе войны",
+    "комментарий военн", "заявлени военн",
+)
 RUSSIAN_SIDE = (
     "кремл", "минобороны рф", "минобороны россии", "мид россии",
     "песков", "путин", "лавров", "российск власти",
     "российск делегац", "россия заяв", "в россии заяв",
+    "вс рф", "генштаб россии", "генштаб рф", "российск военн",
 )
 UKRAINIAN_SIDE = (
     "зеленск", "мид украины", "киев заяв", "украинск власти",
     "украинск делегац", "украина заяв", "в украине заяв",
+    "генштаб всу", "всу заяв", "украинск военн", "минобороны украины",
 )
 # Exclude operational reporting, alleged destruction figures and targeting
 # even where publishers happen to be on the general allowlist.
@@ -81,7 +90,7 @@ def eligible(entry, allowed_sources, now):
     if any(term in lower for term in OPERATIONAL_TERMS):
         return None
     # Only well-defined high-level public-policy topics; no tactical detail.
-    if not any(term in lower for term in DIPLOMACY + INTERNATIONAL + HUMANITARIAN):
+    if not any(term in lower for term in DIPLOMACY + INTERNATIONAL + HUMANITARIAN + PUBLIC_BRIEFING):
         return None
     if not any(term in lower for term in ("украин", "росси", "рф", "киев", "зеленск",
                                           "путин", "кремл", "сво", "конфликт", "войн")):
@@ -95,7 +104,9 @@ def eligible(entry, allowed_sources, now):
         return None
     if not 0 <= now - ts <= AGE_SECONDS:
         return None
-    if any(term in lower for term in DIPLOMACY):
+    if any(term in lower for term in PUBLIC_BRIEFING):
+        category = "Публичные заявления о военной обстановке"
+    elif any(term in lower for term in DIPLOMACY):
         category = "Дипломатия"
     elif any(term in lower for term in HUMANITARIAN):
         category = "Гуманитарная повестка"
@@ -147,10 +158,12 @@ def render_digest(items, now=None):
         "🗞 <b>Ежедневная сводка: Россия и Украина</b>",
         f"📅 {stamp} · около 12:00 (Красноярск)",
         "",
-        "Главные публичные сообщения за последние сутки. "
-        "Это подборка заголовков источников, а не независимая проверка фактов.",
+        "Публичные сообщения за последние сутки, включая заявления обеих сторон. "
+        "Каждое сообщение передаёт позицию указанного источника, "
+        "а не самостоятельно установленный факт.",
     ]
     for group, emoji in (
+        ("Публичные заявления о военной обстановке", "📣"),
         ("Дипломатия", "🕊"),
         ("Международные события", "🌍"),
         ("Гуманитарная повестка", "🤝"),
@@ -163,22 +176,27 @@ def render_digest(items, now=None):
             title = html.escape(item["title"][:225])
             source = html.escape(item["source"][:55])
             url = html.escape(item["link"], quote=True)
-            parts.append(f'• <a href="{url}">{title}</a> — {source}')
+            parts.append(f'• <a href="{url}">{title}</a> — по сообщению {source}; независимая проверка не проводилась')
     parts.extend(("", "🧭 <b>Заявления сторон в публикациях</b>"))
     for side in ("Российская сторона", "Украинская сторона"):
         match = next((x for x in items if x["side"] == side), None)
         if match:
             title = html.escape(match["title"][:150])
             url = html.escape(match["link"], quote=True)
-            parts.append(f'• {side}: <a href="{url}">{title}</a>')
+            source = html.escape(match["source"][:55])
+            parts.append(f'• {side}: <a href="{url}">{title}</a> — по сообщению {source}')
         else:
             parts.append(f"• {side}: в разрешённых источниках недостаточно сведений.")
     parts.extend((
         "",
         "📌 <b>Итог</b>",
-        "На основании одной подборки СМИ нельзя надёжно определить «победителя дня». "
-        "Заявления сторон и оценки могут расходиться. "
-        "Точные позиции войск и неподтверждённые данные о потерях не приводятся.",
+        "Заявления сторон об итогах дня могут противоречить друг другу. "
+        "На основании публикаций СМИ нельзя установить, кто «победил» за день "
+        "или на отдельном направлении. Независимого подтверждения потерь нет; "
+        "точные позиции, перемещения войск и численные оценки потерь не публикуются.",
+        "",
+        "ℹ️ Ссылка на СМИ не гарантирует достоверности сообщения и "
+        "не снимает ответственности за публикацию.",
         "",
         "#СводкаДня #Новости #Россия #Украина",
     ))
