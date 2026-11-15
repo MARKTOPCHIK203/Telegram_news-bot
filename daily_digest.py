@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import news_quality as quality
 
-TZ = ZoneInfo("Asia/Krasnoyarsk")
+TZ = ZoneInfo("Europe/Moscow")
 AGE_SECONDS = 26 * 60 * 60
 MAX_ITEMS_PER_GROUP = 3
 MAX_TOTAL_ITEMS = 9
@@ -157,7 +157,7 @@ def render_digest(items, now=None):
     stamp = datetime.fromtimestamp(now, TZ).strftime("%d.%m.%Y")
     parts = [
         "🗞 <b>Ежедневная сводка: Россия и Украина</b>",
-        f"📅 {stamp} · около 12:00 (Красноярск)",
+        f"📅 {stamp} · около 12:00 (Москва, МСК)",
         "",
         "Публичные сообщения за последние сутки, включая заявления обеих сторон. "
         "Каждое сообщение передаёт позицию указанного источника, "
