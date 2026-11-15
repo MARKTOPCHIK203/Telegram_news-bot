@@ -38,6 +38,18 @@ PUBLIC_BRIEFING = (
     "обстановк на фронте", "боевых действиях", "ходе войны",
     "комментарий военн", "заявлени военн",
 )
+# Only region-wide context; never settlements, front lines, troop routes, or units.
+REGIONS = (
+    ("Северные приграничные области", ("курск", "сумск")),
+    ("Харьковская область", ("харьковск",)),
+    ("Донбасс", ("донбас", "донецк", "луганск")),
+    ("Запорожская область", ("запорожск",)),
+    ("Херсонская область", ("херсонск",)),
+)
+REGIONAL_GENERAL = (
+    "общая обстановк", "ситуац", "восстановлен", "гуманитар",
+    "энергет", "инфраструктур", "помощ", "мирн",
+)
 RUSSIAN_SIDE = (
     "кремл", "минобороны рф", "минобороны россии", "мид россии",
     "песков", "путин", "лавров", "российск власти",
@@ -89,8 +101,12 @@ def eligible(entry, allowed_sources, now):
     lower = title.casefold().replace("ё", "е")
     if any(term in lower for term in OPERATIONAL_TERMS):
         return None
-    # Only well-defined high-level public-policy topics; no tactical detail.
-    if not any(term in lower for term in DIPLOMACY + INTERNATIONAL + HUMANITARIAN + PUBLIC_BRIEFING):
+    # Only broad regional reporting or public-policy/official statements.
+    region = next((name for name, terms in REGIONS
+                   if any(term in lower for term in terms)), "")
+    broad_regional = bool(region and any(term in lower for term in REGIONAL_GENERAL))
+    if not (broad_regional or any(term in lower for term in
+                                 DIPLOMACY + INTERNATIONAL + HUMANITARIAN + PUBLIC_BRIEFING)):
         return None
     if not any(term in lower for term in ("украин", "росси", "рф", "киев", "зеленск",
                                           "путин", "кремл", "сво", "конфликт", "войн",
@@ -111,13 +127,15 @@ def eligible(entry, allowed_sources, now):
         category = "Дипломатия"
     elif any(term in lower for term in HUMANITARIAN):
         category = "Гуманитарная повестка"
+    elif broad_regional:
+        category = "Региональный обзор"
     else:
         category = "Международные события"
     side = ("Российская сторона" if any(x in lower for x in RUSSIAN_SIDE)
             else "Украинская сторона" if any(x in lower for x in UKRAINIAN_SIDE)
             else "")
     return dict(title=title, source=source, link=link, published=ts,
-                category=category, side=side)
+                category=category, side=side, region=region)
 
 
 def select_digest_stories(entries, allowed_sources, now=None):
@@ -168,6 +186,7 @@ def render_digest(items, now=None):
         ("Дипломатия", "🕊"),
         ("Международные события", "🌍"),
         ("Гуманитарная повестка", "🤝"),
+        ("Региональный обзор", "🗺"),
     ):
         matching = [x for x in items if x["category"] == group]
         if not matching:
@@ -178,6 +197,16 @@ def render_digest(items, now=None):
             source = html.escape(item["source"][:55])
             url = html.escape(item["link"], quote=True)
             parts.append(f'• <a href="{url}">{title}</a> — по сообщению {source}; независимая проверка не проводилась')
+    # Macro-regions only; this is a map of topics mentioned, not troop locations.
+    regions = list(dict.fromkeys(x.get("region") for x in items if x.get("region")))
+    parts.extend(("", "🗺 <b>Региональный контекст</b>"))
+    if regions:
+        parts.append("В отобранных публикациях упоминаются: " +
+                     ", ".join(html.escape(r) for r in regions[:5]) +
+                     ". Это не сведения об изменениях линии фронта.")
+    else:
+        parts.append("В доступной подборке недостаточно сведений для регионального обзора.")
+
     parts.extend(("", "🧭 <b>Заявления сторон в публикациях</b>"))
     for side in ("Российская сторона", "Украинская сторона"):
         match = next((x for x in items if x["side"] == side), None)
@@ -188,16 +217,37 @@ def render_digest(items, now=None):
             parts.append(f'• {side}: <a href="{url}">{title}</a> — по сообщению {source}')
         else:
             parts.append(f"• {side}: в разрешённых источниках недостаточно сведений.")
+    # Objective, non-generative conclusion grounded solely in selected items.
+    categories = (
+        ("Публичные заявления о военной обстановке", "общие заявления ведомств"),
+        ("Дипломатия", "дипломатия"),
+        ("Международные события", "международные события"),
+        ("Гуманитарная повестка", "гуманитарные вопросы"),
+        ("Региональный обзор", "общие региональные события"),
+    )
+    category_counts = [
+        f"{label} — {sum(x['category'] == category for x in items)}"
+        for category, label in categories
+        if any(x["category"] == category for x in items)
+    ]
+    sides_present = {x["side"] for x in items if x["side"]}
+    comparison = (
+        "Есть сообщения о публичных позициях обеих сторон; это не означает "
+        "независимого подтверждения их заявлений."
+        if len(sides_present) == 2 else
+        "Подборка не отражает заявления обеих сторон в равной мере."
+    )
     parts.extend((
         "",
-        "📌 <b>Итог</b>",
-        "Заявления сторон об итогах дня могут противоречить друг другу. "
-        "На основании публикаций СМИ нельзя установить, кто «победил» за день "
-        "или на отдельном направлении. Независимого подтверждения потерь нет; "
-        "точные позиции, перемещения войск и численные оценки потерь не публикуются.",
+        "📌 <b>Что произошло за сутки — вывод по публикациям</b>",
+        "Из доступных заголовков: " + "; ".join(category_counts) + ".",
+        comparison,
+        "Достоверно установить изменения линии фронта, результаты боевых "
+        "действий или «победителя дня» по этим сообщениям нельзя. "
+        "Оперативные позиции, маршруты и неподтверждённые сведения о потерях опущены.",
         "",
-        "ℹ️ Ссылка на СМИ не гарантирует достоверности сообщения и "
-        "не снимает ответственности за публикацию.",
+        "ℹ️ Ссылки на СМИ не гарантируют достоверность сообщений; "
+        "подборка не является независимой проверкой фактов.",
         "",
         "#СводкаДня #Новости #Россия #Украина",
     ))
