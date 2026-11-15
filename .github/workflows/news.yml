@@ -11,8 +11,8 @@ on:
   # Fallback: GitHub may delay or drop schedule events; relay below is primary.
   schedule:
     - cron: '8,23,38,53 * * * *'
-    # 05:00 UTC = 12:00 Krasnoyarsk (UTC+7); existing relay is a fallback.
-    - cron: '0 5 * * *'
+    # 09:00 UTC = 12:00 Moscow (UTC+3); existing relay is a fallback.
+    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
