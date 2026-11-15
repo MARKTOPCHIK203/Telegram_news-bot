@@ -5,9 +5,14 @@ on:
   push:
     paths:
       - '.github/workflows/news.yml'
+      - 'bot.py'
+      - 'daily_digest.py'
+      - 'test_daily_digest.py'
   # Fallback: GitHub may delay or drop schedule events; relay below is primary.
   schedule:
     - cron: '8,23,38,53 * * * *'
+    # 05:00 UTC = 12:00 Krasnoyarsk (UTC+7); existing relay is a fallback.
+    - cron: '0 5 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -47,9 +52,9 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Validate Python syntax
-        run: python -m compileall -q bot.py news_quality.py article_preview.py test_news_quality.py test_article_preview.py
+        run: python -m compileall -q bot.py news_quality.py article_preview.py daily_digest.py test_news_quality.py test_article_preview.py test_daily_digest.py
       - name: Run quality tests
-        run: python -m unittest -v test_news_quality.py test_article_preview.py
+        run: python -m unittest -v test_news_quality.py test_article_preview.py test_daily_digest.py
       - name: Run bot
         run: python bot.py
       - name: Save published IDs
