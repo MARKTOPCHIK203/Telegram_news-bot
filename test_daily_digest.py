@@ -1,7 +1,7 @@
 """Offline regression tests for the once-a-day safe public-news digest."""
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 import daily_digest
 from daily_digest import TZ, due_for_digest, digest_date, select_digest_stories, render_digest
@@ -26,6 +26,7 @@ class DailyDigestTests(unittest.TestCase):
         noon = self.ts(12)
         self.assertFalse(due_for_digest({"posts": []}, before_noon))
         self.assertTrue(due_for_digest({"posts": []}, noon))
+        self.assertEqual(datetime.fromtimestamp(noon, timezone.utc).hour, 9)
         self.assertFalse(due_for_digest({
             "posts": [], "daily_digest_date": digest_date(noon)
         }, noon))
@@ -49,7 +50,8 @@ class DailyDigestTests(unittest.TestCase):
         text = render_digest(items, now)
         self.assertIn("Российская сторона", text)
         self.assertIn("Украинская сторона", text)
-        self.assertIn("нельзя надёжно определить", text)
+        self.assertIn("Достоверно установить изменения линии фронта", text)
+        self.assertIn("12:00 (Москва, МСК)", text)
         self.assertNotIn("Медуза", text)
         self.assertNotIn("продвинулись", text)
 
@@ -70,9 +72,39 @@ class DailyDigestTests(unittest.TestCase):
         rendered = render_digest(items, now)
         self.assertIn("по сообщению ТАСС", rendered)
         self.assertIn("по сообщению Reuters", rendered)
-        self.assertIn("не гарантирует достоверности", rendered)
+        self.assertIn("не гарантируют достоверность", rendered)
         self.assertNotIn("продвижении", rendered)
         self.assertNotIn("уничтожении", rendered)
+
+    def test_macro_region_reports_are_non_operational(self):
+        now = self.ts(12, 5)
+        entries = [
+            self.entry("В Донецкой области Украины обсуждают восстановление инфраструктуры",
+                       "ТАСС", now - 60),
+            self.entry("На Харьковском направлении ВСУ продвинулись вперёд",
+                       "Reuters", now - 120),
+        ]
+        items = select_digest_stories(entries, ["ТАСС", "Reuters"], now)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["region"], "Донбасс")
+        self.assertIn("Региональный обзор", [i["category"] for i in items])
+        report = render_digest(items, now)
+        self.assertIn("Донбасс", report)
+        self.assertIn("Это не сведения об изменениях линии фронта", report)
+        self.assertNotIn("продвинулись", report)
+
+    def test_daily_conclusion_is_based_on_selected_topics(self):
+        now = self.ts(12)
+        items = [
+            {"title": "США обсудили санкции в отношении России",
+             "source": "РБК", "link": "https://www.rbc.ru/politics",
+             "published": now, "category": "Международные события",
+             "side": "", "region": ""},
+        ]
+        text = render_digest(items, now)
+        self.assertIn("международные события — 1", text)
+        self.assertIn("Подборка не отражает заявления обеих сторон", text)
+        self.assertIn("независимой проверкой фактов", text)
 
     def test_no_sources_no_invented_report(self):
         self.assertIsNone(render_digest([]))
