@@ -125,10 +125,10 @@ def eligible(entry, allowed_sources, now):
         category = "Публичные заявления о военной обстановке"
     elif any(term in lower for term in DIPLOMACY):
         category = "Дипломатия"
-    elif any(term in lower for term in HUMANITARIAN):
-        category = "Гуманитарная повестка"
     elif broad_regional:
         category = "Региональный обзор"
+    elif any(term in lower for term in HUMANITARIAN):
+        category = "Гуманитарная повестка"
     else:
         category = "Международные события"
     side = ("Российская сторона" if any(x in lower for x in RUSSIAN_SIDE)
