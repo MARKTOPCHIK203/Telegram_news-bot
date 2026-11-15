@@ -22,6 +22,7 @@ from urllib3.util.retry import Retry
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 import news_quality as quality
+import daily_digest
 import article_preview
 from deep_translator import GoogleTranslator
 
@@ -602,6 +603,39 @@ def send_post(item):
     raise RuntimeError("Telegram: превышен лимит запросов, сообщение не отправлено.")
 
 
+
+def publish_daily_digest(entries, state):
+    """A once-per-day source-attributed report after local noon in Krasnoyarsk."""
+    if not daily_digest.due_for_digest(state):
+        return False
+    items = daily_digest.select_digest_stories(entries, PUBLISHERS)
+    message = daily_digest.render_digest(items)
+    if not message:
+        print("Ежедневная сводка: подходящих безопасных заголовков нет; повторим позже.")
+        return False
+    response = SESSION.post(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        json={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+        },
+        timeout=35,
+    )
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if not response.ok or not result.get("ok"):
+        description = str(result.get("description", "Unknown Telegram API response"))
+        raise RuntimeError(f"Не удалось отправить ежедневную сводку: {description.replace(BOT_TOKEN, '[TOKEN HIDDEN]')}")
+    state["daily_digest_date"] = daily_digest.digest_date()
+    save_state(state)
+    print(f"Ежедневная сводка за {state['daily_digest_date']} опубликована: {len(items)} сообщений.")
+    return True
+
+
 def main():
     if not DRY_RUN and (not BOT_TOKEN or not CHAT_ID):
         raise SystemExit("Настрой TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в GitHub Secrets.")
@@ -619,12 +653,21 @@ def main():
         except (TypeError, ValueError):
             continue
     state["posts"] = recent_posts
-    selected = choose_news(get_entries(), state)
+    entries = get_entries()
+    selected = choose_news(entries, state)
     print(f"Подходящих новых сообщений: {len(selected)}; DRY_RUN={DRY_RUN}")
     if DRY_RUN:
+        if daily_digest.due_for_digest(state):
+            preview_items = daily_digest.select_digest_stories(entries, PUBLISHERS)
+            print(f"[ПРОВЕРКА] Ежедневная сводка: {len(preview_items)} заголовков")
         for item in selected:
             print(f"[ПРОВЕРКА] {item['source']}: {item['title']}\n{item['link']}")
         return
+    try:
+        publish_daily_digest(entries, state)
+    except (requests.RequestException, RuntimeError) as exc:
+        # Keep regular news publishing and the automatic GitHub relay working.
+        print(f"Ежедневная сводка не отправлена, попробуем снова: {type(exc).__name__}: {exc}")
     posted_count = 0
     for item in selected:
         if not send_post(item):
