@@ -13,9 +13,10 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import urlencode, urlparse
 
 import feedparser
+from bs4 import BeautifulSoup
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -206,11 +207,67 @@ def extract_summary(entry, title):
         return ""
     if len(raw) < 65:
         return ""
-    sentences = re.split(r"(?<=[.!?])\s+", raw)
-    short = " ".join(sentences[:8]).strip()
-    if len(short) > 1000:
-        short = short[:1000].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
-    return short
+    return key_details(raw)
+
+
+def key_details(text):
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    digest = " ".join(sentences[:5])
+    if len(digest) > 1200:
+        digest = digest[:1199].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return digest
+
+
+ARTICLE_HOSTS = frozenset({
+    "bbc.com", "www.bbc.com", "bbc.co.uk", "www.bbc.co.uk",
+    "rbc.ru", "www.rbc.ru", "tass.ru", "www.tass.ru",
+    "kommersant.ru", "www.kommersant.ru", "interfax.ru", "www.interfax.ru",
+})
+ARTICLE_BOILERPLATE = re.compile(
+    r"^(?:читайте также|подпишитесь|реклама|автор фото|источник фото|"
+    r"это видео|ваш браузер|read more|subscribe|advertisement|image source|"
+    r"sign up|related topics|this video)", re.I
+)
+
+
+def article_details(url, title):
+    """Extract a short lead from a supported publisher's public article."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.netloc.lower() not in ARTICLE_HOSTS:
+            return ""
+        with SESSION.get(url, timeout=7, stream=True, allow_redirects=False) as response:
+            if response.status_code != 200 or "text/html" not in response.headers.get("Content-Type", "").lower():
+                return ""
+            body = bytearray()
+            for chunk in response.iter_content(65536):
+                body.extend(chunk)
+                if len(body) > 1_500_000:
+                    return ""
+        page = BeautifulSoup(bytes(body), "html.parser")
+        container = page.select_one('[itemprop="articleBody"], .article__text, .doc__text') or page.find("article")
+        if container is None:
+            return ""
+        for element in container.select("aside, nav, footer, figure, script, style, [hidden]"):
+            element.decompose()
+        paragraphs = []
+        for paragraph in container.find_all("p"):
+            value = quality.without_links(paragraph.get_text(" ", strip=True))
+            if len(value) < 65 or ARTICLE_BOILERPLATE.match(value):
+                continue
+            if quality.is_similar_story(value, title) or value in paragraphs:
+                continue
+            paragraphs.append(value)
+            if len(paragraphs) == 3:
+                break
+        lead = " ".join(paragraphs)
+        if not quality.is_safe_title(lead) or quality.needs_editor_review(lead):
+            return ""
+        return key_details(lead)
+    except (requests.RequestException, ValueError):
+        return ""
 
 
 def translate_summary(summary):
@@ -218,7 +275,7 @@ def translate_summary(summary):
         return summary
     try:
         translated = GoogleTranslator(source="auto", target="ru").translate(summary)
-        if translated and len(translated) <= 1100:
+        if translated and len(translated) <= 4500:
             return translated.strip()
     except Exception as exc:
         print(f"Не удалось перевести описание: {type(exc).__name__}")
@@ -442,7 +499,10 @@ def commons_photo(title, person=None):
             license_lower = license_name.casefold()
             # Use only CC0/public-domain imagery to avoid automatic
             # cropping/redistribution of photos with additional obligations.
-            if not any(x in license_lower for x in ("cc0", "public domain")):
+            attribution_required = text_only(meta.get("AttributionRequired", {}).get("value", ""))
+            if attribution_required.casefold() == "true" or not re.fullmatch(
+                r"cc0(?: 1\.0)?|public domain(?: mark 1\.0)?|pdm", license_lower
+            ):
                 continue
             image_url = info.get("thumburl") or info.get("url", "")
             host = urlparse(image_url).hostname or ""
@@ -465,11 +525,7 @@ def commons_photo(title, person=None):
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=85, optimize=True)
             buf.seek(0)
-            artist = text_only(meta.get("Artist", {}).get("value", ""))[:65] or "автор указан на Commons"
-            page_url = info.get("descriptionurl") or (
-                "https://commons.wikimedia.org/wiki/" + quote(page.get("title", "").replace(" ", "_"))
-            )
-            return buf, f"{artist}, {license_name}", page_url
+            return buf
     except (requests.RequestException, ValueError, OSError) as exc:
         print(f"Commons недоступен: {exc}")
     return None
@@ -492,7 +548,7 @@ def news_hashtags(item):
     return " ".join(tags)
 
 
-def make_caption(item):
+def make_caption(item, limit=1024):
     title = quality.without_links(item["title"])[:220]
     source = quality.without_links(item["source"])[:80]
     summary = quality.without_links(item.get("summary") or "")
@@ -516,9 +572,9 @@ def make_caption(item):
         photo_note = quality.without_links(item["photo_note"])
         footer += "\n📷 " + html.escape(photo_note[:110])
     if summary and summary.casefold() != title.casefold():
-        # Count the visible text in UTF-16 units, including the separator.
-        used = len(text_only(header + footer).encode("utf-16-le")) // 2
-        budget = max(0, 1000 - used)
+        visible = html.unescape(re.sub(r"</?b>", "", header + footer))
+        used = len(visible.encode("utf-16-le")) // 2
+        budget = max(0, limit - used - 2)
         if len(summary.encode("utf-16-le")) // 2 > budget:
             short = summary.encode("utf-16-le")[:max(0, budget - 1) * 2].decode("utf-16-le", errors="ignore")
             summary = short.rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
@@ -566,6 +622,7 @@ def send_post(item):
     if quality.blocked_publisher(item["source"]) or quality.blocked_media_url(item["link"]):
         print(f"Пропуск запрещённого источника: {item['source']}")
         return False
+    publisher_url = item["link"]
     if article_preview.google_article_id(item["link"]):
         publisher_url = article_preview.resolve_publisher_url(item["link"], SESSION)
         if publisher_url and quality.blocked_media_url(publisher_url):
@@ -573,6 +630,13 @@ def send_post(item):
             return False
     item = dict(item, title=quality.without_links(item["title"]),
                 source=quality.without_links(item["source"]))
+    if not item.get("summary"):
+        lead = article_details(publisher_url, item.get("original_title", item["title"]))
+        translated = translate_summary(lead)
+        if (translated and quality.russian_text_ok(translated)
+                and quality.is_safe_title(translated) and not quality.needs_editor_review(translated)):
+            item["original_summary"] = lead
+            item["summary"] = translated
     image_file = rss_photo(item)
     if image_file is not None:
         item["photo_note"] = "Фото из RSS источника"
@@ -585,9 +649,9 @@ def send_post(item):
             illustration = commons_photo(item["title"])
             label = "Иллюстрация"
         if illustration:
-            image_file, credit, _ = illustration
-            item["photo_note"] = f"{label}. {credit}"
-    message = make_caption(item)
+            image_file = illustration
+            item["photo_note"] = label
+    message = make_caption(item, limit=4096 if image_file is None else 1024)
     if image_file is None:
         method = "sendMessage"
         request = {"json": {
