@@ -42,6 +42,7 @@ jobs:
         run: |
           echo "Trigger: ${{ github.event_name }}"
           echo "Scheduled expression: ${{ github.event.schedule }}"
+          echo "Revision: $GITHUB_SHA"
           date -u "+Runner UTC: %Y-%m-%d %H:%M:%S"
       - uses: actions/checkout@v4
         with:
