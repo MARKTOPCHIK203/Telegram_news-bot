@@ -19,7 +19,7 @@ import feedparser
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageOps
 
 import news_quality as quality
 import daily_digest
@@ -123,19 +123,10 @@ TACTICAL = (
     "air defense positions", "launch site", "target coordinates",
 )
 COORDINATES = re.compile(r"\b\d{1,2}\.\d{4,}\s*[,;]\s*\d{1,3}\.\d{4,}\b")
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 def text_only(value):
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", " ", value or ""))).strip()
-
-
-def font(size, bold=False):
-    try:
-        return ImageFont.truetype(FONT_BOLD if bold else FONT_REG, size)
-    except OSError:
-        return ImageFont.load_default()
 
 
 def get_state():
@@ -319,6 +310,13 @@ def choose_news(entries, state):
             "status": quality.classify(title), "topic": quality.topic(title),
             "direct_feed": bool(entry.get("direct_feed")),
             "summary": summary,
+            "rss_media": [
+                media.get("url") or media.get("href", "")
+                for field in ("media_content", "media_thumbnail", "enclosures")
+                for media in entry.get(field, [])
+                if media.get("medium") == "image" or
+                media.get("type", "").startswith("image/") or field == "media_thumbnail"
+            ],
         })
     # Favor informative direct-feed stories; don't flood the channel with
     # headline-only Google News results when proper descriptions exist.
@@ -372,15 +370,56 @@ def image_category(title):
         return "Ukraine power lines electricity"
     if any(word in lower for word in ("поезд", "железнодор", "вокзал")):
         return "Ukraine railway station"
-    # Только нейтральные общие виды, не фото чужого удара/боя.
-    return "Ukraine city panorama"
+    if any(word in lower for word in ("переговор", "дипломат", "саммит")):
+        return "diplomatic meeting United Nations conference room"
+    if any(word in lower for word in ("гуманитар", "бежен", "помощь")):
+        return "humanitarian aid supplies warehouse"
+    if any(word in lower for word in ("киев", "київ", "kyiv")):
+        return "Kyiv city skyline panorama"
+    return None
 
 
-def commons_photo(title):
-    """Только лицензированные иллюстративные изображения; не фото описанного события."""
+PORTRAIT_PEOPLE = (
+    (r"мерц(?:а|у|ем|е)?|мерч(?=\s+(?:заявил|сообщил|выразил|готов))|merz",
+     "Фридрих Мерц", "Friedrich Merz"),
+    (r"зеленск(?:ий|ого|ому|им|ом)|zelensky[yi]?", "Владимир Зеленский", "Volodymyr Zelenskyy"),
+    (r"путин(?:а|у|ым|е)?|putin", "Владимир Путин", "Vladimir Putin"),
+    (r"трамп(?:а|у|ом|е)?|trump", "Дональд Трамп", "Donald Trump"),
+    (r"макрон(?:а|у|ом|е)?|macron", "Эмманюэль Макрон", "Emmanuel Macron"),
+    (r"стармер(?:а|у|ом|е)?|starmer", "Кир Стармер", "Keir Starmer"),
+    (r"лавров(?:а|у|ым|е)?|lavrov", "Сергей Лавров", "Sergey Lavrov"),
+    (r"песков(?:а|у|ым|е)?|peskov", "Дмитрий Песков", "Dmitry Peskov"),
+    (r"си\s+цзиньпин(?:а|у|ом|е)?|xi\s+jinping", "Си Цзиньпин", "Xi Jinping"),
+    (r"эрдоган(?:а|у|ом|е)?|erdogan|erdoğan", "Реджеп Тайип Эрдоган", "Erdoğan"),
+    (r"орбан(?:а|у|ом|е)?|orbán", "Виктор Орбан", "Viktor Orbán"),
+    (r"фон\s+дер\s+ляйен|von\s+der\s+leyen", "Урсула фон дер Ляйен", "Ursula von der Leyen"),
+    (r"рютте|rutte", "Марк Рютте", "Mark Rutte"),
+    (r"нетаньяху|netanyahu", "Биньямин Нетаньяху", "Benjamin Netanyahu"),
+)
+PORTRAIT_PATTERNS = tuple(
+    (re.compile(rf"\b(?:{aliases})\b", re.IGNORECASE), display_name, commons_name)
+    for aliases, display_name, commons_name in PORTRAIT_PEOPLE
+)
+
+
+def headline_person(title):
+    """Choose the first recognized person mentioned in the headline."""
+    matches = [
+        (match.start(), display_name, commons_name)
+        for pattern, display_name, commons_name in PORTRAIT_PATTERNS
+        if (match := pattern.search(title))
+    ]
+    return min(matches)[1:] if matches else None
+
+
+def commons_photo(title, person=None):
+    """Find a reusable archive portrait or a thematic illustration."""
+    category = f'intitle:"{person[1]}"' if person else image_category(title)
+    if not category:
+        return None
     params = {
         "action": "query", "generator": "search",
-        "gsrsearch": image_category(title), "gsrnamespace": "6", "gsrlimit": "12",
+        "gsrsearch": category, "gsrnamespace": "6", "gsrlimit": "24" if person else "12",
         "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": "1280",
         "format": "json", "formatversion": "2",
     }
@@ -388,7 +427,15 @@ def commons_photo(title):
         response = SESSION.get("https://commons.wikimedia.org/w/api.php", params=params, timeout=15)
         response.raise_for_status()
         pages = response.json().get("query", {}).get("pages", [])
+        if person:
+            pages.sort(key=lambda page: not any(
+                hint in page.get("title", "").casefold()
+                for hint in ("portrait", "headshot", "official")
+            ))
         for page in pages:
+            filename = re.sub(r"[_-]+", " ", page.get("title", "")).casefold()
+            if person and person[1].casefold() not in filename:
+                continue
             info = (page.get("imageinfo") or [{}])[0]
             meta = info.get("extmetadata", {})
             license_name = text_only(meta.get("LicenseShortName", {}).get("value", ""))
@@ -408,9 +455,13 @@ def commons_photo(title):
             if len(photo.content) > 8_000_000:
                 continue
             img = Image.open(io.BytesIO(photo.content))
-            if img.width < 640 or img.height < 350:
+            min_width = 350 if person else 640
+            if img.width < min_width or img.height < 350 or img.width * img.height > 24_000_000:
                 continue
-            img = ImageOps.fit(img.convert("RGB"), (1200, 675))
+            if person:
+                img = ImageOps.contain(img.convert("RGB"), (1200, 900))
+            else:
+                img = ImageOps.fit(img.convert("RGB"), (1200, 675))
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=85, optimize=True)
             buf.seek(0)
@@ -420,49 +471,8 @@ def commons_photo(title):
             )
             return buf, f"{artist}, {license_name}", page_url
     except (requests.RequestException, ValueError, OSError) as exc:
-        print(f"Commons недоступен, создаю карточку: {exc}")
+        print(f"Commons недоступен: {exc}")
     return None
-
-
-def wrap(draw, value, face, max_width, max_lines):
-    words = value.split()
-    lines, current = [], ""
-    for word in words:
-        trial = (current + " " + word).strip()
-        if draw.textbbox((0, 0), trial, font=face)[2] <= max_width:
-            current = trial
-        else:
-            if current:
-                lines.append(current)
-            current = word
-        if len(lines) >= max_lines:
-            break
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if len(lines) == max_lines and len(words) > sum(len(x.split()) for x in lines):
-        lines[-1] = lines[-1].rstrip(" .,") + "…"
-    return lines
-
-
-def make_card(item):
-    """Собственная графика, чтобы пост всегда имел изображение без нарушения прав."""
-    img = Image.new("RGB", (1200, 675), "#132238")
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((0, 0, 18, 675), fill="#dc6868")
-    draw.rounded_rectangle((64, 57, 470, 119), radius=12, fill="#243950")
-    draw.text((88, 72), "ГОЛОС СВО · НОВОСТИ", font=font(25, True), fill="#f0f4f8")
-    draw.text((72, 137), item.get("topic", "События").upper(), font=font(24, True), fill="#a8d1e8")
-    face = font(55, True)
-    lines = wrap(draw, item["title"], face, 1070, 5)
-    for i, line in enumerate(lines):
-        draw.text((72, 180 + i * 77), line, font=face, fill="white")
-    draw.line((72, 572, 1120, 572), fill="#60748a", width=2)
-    draw.text((72, 593), item["source"][:45], font=font(26), fill="#c8d6e5")
-    draw.text((835, 593), "Иллюстрация", font=font(25), fill="#c8d6e5")
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=89)
-    buf.seek(0)
-    return buf
 
 
 def news_hashtags(item):
@@ -502,6 +512,9 @@ def make_caption(item):
         item.get("original_summary") and item.get("original_summary") != item.get("summary")
     ):
         footer += "\n🌐 Автоматический перевод."
+    if item.get("photo_note"):
+        photo_note = quality.without_links(item["photo_note"])
+        footer += "\n📷 " + html.escape(photo_note[:110])
     if summary and summary.casefold() != title.casefold():
         # Count the visible text in UTF-16 units, including the separator.
         used = len(text_only(header + footer).encode("utf-16-le")) // 2
@@ -511,6 +524,42 @@ def make_caption(item):
             summary = short.rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
         header += html.escape(summary) + "\n\n"
     return header + footer
+
+
+RSS_IMAGE_HOSTS = frozenset({
+    "ichef.bbci.co.uk", "images.bbci.co.uk", "static.files.bbci.co.uk",
+})
+
+
+def rss_photo(item):
+    """Use article media explicitly provided by a supported RSS publisher."""
+    for url in dict.fromkeys(item.get("rss_media", [])):
+        try:
+            parsed = urlparse(url)
+            if (parsed.scheme != "https" or parsed.netloc.lower() not in RSS_IMAGE_HOSTS):
+                continue
+            with SESSION.get(url, timeout=8, stream=True, allow_redirects=False) as response:
+                if response.status_code != 200 or not response.headers.get("Content-Type", "").startswith("image/"):
+                    continue
+                data = io.BytesIO()
+                for chunk in response.iter_content(65536):
+                    data.write(chunk)
+                    if data.tell() > 8_000_000:
+                        break
+                if data.tell() > 8_000_000:
+                    continue
+                data.seek(0)
+                with Image.open(data) as image:
+                    if image.width < 640 or image.height < 350 or image.width * image.height > 24_000_000:
+                        continue
+                    photo = ImageOps.fit(image.convert("RGB"), (1200, 675))
+                    result = io.BytesIO()
+                    photo.save(result, "JPEG", quality=88, optimize=True)
+                    result.seek(0)
+                    return result
+        except (requests.RequestException, OSError, ValueError, Image.DecompressionBombError):
+            continue
+    return None
 
 
 def send_post(item):
@@ -524,18 +573,39 @@ def send_post(item):
             return False
     item = dict(item, title=quality.without_links(item["title"]),
                 source=quality.without_links(item["source"]))
-    image_file = make_card(item)
-    caption = make_caption(item)
-    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    image_file = rss_photo(item)
+    if image_file is not None:
+        item["photo_note"] = "Фото из RSS источника"
+    else:
+        person = headline_person(item["title"])
+        illustration = commons_photo(item["title"], person) if person else None
+        if illustration:
+            label = f"Архивное фото: {person[0]}"
+        else:
+            illustration = commons_photo(item["title"])
+            label = "Иллюстрация"
+        if illustration:
+            image_file, credit, _ = illustration
+            item["photo_note"] = f"{label}. {credit}"
+    message = make_caption(item)
+    if image_file is None:
+        method = "sendMessage"
+        request = {"json": {
+            "chat_id": CHAT_ID, "text": message, "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+        }}
+    else:
+        method = "sendPhoto"
+        request = {
+            "data": {"chat_id": CHAT_ID, "caption": message, "parse_mode": "HTML"},
+            "files": {"photo": ("news.jpg", image_file, "image/jpeg")},
+        }
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     for attempt in range(3):
-        image_file.seek(0)
+        if image_file is not None:
+            image_file.seek(0)
         try:
-            response = SESSION.post(
-                api_url,
-                data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-                files={"photo": ("news.jpg", image_file, "image/jpeg")},
-                timeout=35,
-            )
+            response = SESSION.post(api_url, timeout=35, **request)
             if response.status_code == 429:
                 delay = min(30, int(response.json().get("parameters", {}).get("retry_after", 5)))
                 time.sleep(delay)
@@ -553,7 +623,7 @@ def send_post(item):
                 )
             return True
         except requests.RequestException:
-            raise RuntimeError("Неизвестен результат отправки фото; повтор отключён.") from None
+            raise RuntimeError("Неизвестен результат отправки новости; повтор отключён.") from None
     raise RuntimeError("Telegram: превышен лимит запросов, сообщение не отправлено.")
 
 
