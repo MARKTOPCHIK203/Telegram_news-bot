@@ -204,7 +204,7 @@ def translate_headline(title):
 
 def extract_summary(entry, title):
     """Only substantive RSS descriptions; never manufacture context."""
-    raw = text_only(entry.get("summary") or entry.get("description") or "")
+    raw = quality.without_links(text_only(entry.get("summary") or entry.get("description") or ""))
     raw = re.sub(r"\s*Читать далее.*$", "", raw, flags=re.I).strip()
     if not raw or raw.casefold() == title.casefold():
         return ""
@@ -216,9 +216,9 @@ def extract_summary(entry, title):
     if len(raw) < 65:
         return ""
     sentences = re.split(r"(?<=[.!?])\s+", raw)
-    short = " ".join(sentences[:5]).strip()
-    if len(short) > 650:
-        short = short[:650].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    short = " ".join(sentences[:8]).strip()
+    if len(short) > 1000:
+        short = short[:1000].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
     return short
 
 
@@ -239,17 +239,16 @@ def choose_news(entries, state):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     history = [post for post in state["posts"] if isinstance(post, dict)]
     already = {post.get("id") for post in history}
+    previous_links = {post.get("link") for post in history}
     today_posts = [post for post in history if post.get("date") == today]
     limit = min(MAX_POSTS_PER_RUN, max(0, MAX_POSTS_PER_DAY - len(today_posts)))
     if limit <= 0:
         print(f"Достигнут дневной лимит публикаций: {len(today_posts)}/{MAX_POSTS_PER_DAY} (UTC).")
         return []
 
-    # Keep enough history to prevent duplicate posts from different publishers
-    # within 24 hours, but allow genuinely recurring stories on later days.
     recent_titles = [
-        post.get("title", "") for post in history
-        if post.get("title") and now - float(post.get("ts", 0)) < 24 * 3600
+        title for post in history if now - float(post.get("ts", 0)) < 72 * 3600
+        for title in (post.get("title"), post.get("original_title")) if title
     ]
     daily_sources = {}
     for post in today_posts:
@@ -258,6 +257,7 @@ def choose_news(entries, state):
 
     candidates = []
     local_ids = set()
+    local_links = set()
     local_titles = []
     rejected = {"source": 0, "topic": 0, "safety": 0, "age": 0, "duplicate": 0}
     for entry in entries:
@@ -294,7 +294,7 @@ def choose_news(entries, state):
         article_id = hashlib.sha256(
             (source.casefold() + "|" + lower).encode()
         ).hexdigest()[:24]
-        if article_id in already or article_id in local_ids:
+        if article_id in already or article_id in local_ids or link in previous_links or link in local_links:
             rejected["duplicate"] += 1
             continue
         if daily_sources.get(source.casefold(), 0) >= 20:
@@ -311,6 +311,7 @@ def choose_news(entries, state):
             rejected["safety"] += 1
             continue
         local_ids.add(article_id)
+        local_links.add(link)
         local_titles.append(title)
         candidates.append({
             "id": article_id, "title": title, "original_title": title, "source": source,
@@ -349,6 +350,11 @@ def choose_news(entries, state):
             continue
         if quality.needs_editor_review(translated_title) or quality.needs_editor_review(translated_summary):
             print(f"Пропуск: чувствительная тема для ручной проверки: {item['source']}")
+            continue
+        if not quality.is_safe_title(translated_title) or not quality.is_safe_title(translated_summary):
+            continue
+        if any(quality.is_similar_story(translated_title, title)
+               for title in recent_titles + [post["title"] for post in checked]):
             continue
         item["title"] = translated_title
         item["original_summary"] = original_summary
@@ -476,98 +482,48 @@ def news_hashtags(item):
     return " ".join(tags)
 
 
-def make_caption(item, credit=None):
-    """Telegram editorial style; short original summary, not full article."""
-    title = html.escape(item["title"][:220])
-    source = html.escape(item["source"][:80])
-    url = html.escape(item["link"], quote=True)
-    summary = (item.get("summary") or "").strip()
-    if summary and summary.casefold() == item["title"].casefold():
-        summary = ""
-    summary = html.escape(summary[:650])
-    details = f"{summary}\n\n" if summary else ""
+def make_caption(item):
+    title = quality.without_links(item["title"])[:220]
+    source = quality.without_links(item["source"])[:80]
+    summary = quality.without_links(item.get("summary") or "")
     event_time = datetime.fromtimestamp(item["published"], timezone.utc).strftime("%d.%m.%Y, %H:%M UTC")
     label = item.get("status", "")
     status_line = ""
     if "Неподтвержд" in label:
-        status_line = "⚠️ Сообщение не подтверждено независимо.\n\n"
+        status_line = "⚠️ СЛУХ. Сообщение не подтверждено независимо.\n\n"
     elif "Заявление" in label:
         status_line = "📣 Это заявление источника, а не установленный факт.\n\n"
-    result = (
-        f"⚡ <b>{title}</b>\n\n"
-        f"{details}{status_line}"
-        f'📰 <b>Источник:</b> <a href="{url}">{source}</a>\n'
-        f'🕒 <b>Опубликовано:</b> {event_time}\n'
-        f"{news_hashtags(item)}"
+    header = f"⚡ <b>{html.escape(title)}</b>\n\n{status_line}"
+    footer = (
+        f"📰 <b>Источник:</b> {html.escape(source)}\n"
+        f"🕒 <b>Опубликовано:</b> {event_time}\n{news_hashtags(item)}"
     )
-    if item.get("original_title") != item["title"] or (
+    if item.get("original_title", item["title"]) != item["title"] or (
         item.get("original_summary") and item.get("original_summary") != item.get("summary")
     ):
-        result += "\n🌐 Автоматический перевод."
-    if credit:
-        author, photo_url = credit
-        result += (
-            "\n📷 Архивное фото, не снимок события: "
-            f'<a href="{html.escape(photo_url, quote=True)}">{html.escape(author[:70])}</a>'
-        )
-    if len(text_only(result)) > 1000:
-        # Keep essential details and attribution rather than fail the run.
-        excess = len(text_only(result)) - 990
-        if summary and excess > 0:
-            short = html.escape((item.get("summary") or "")[:max(90, 650-excess-30)])
-            result = result.replace(details, short + "…\n\n", 1)
-        if len(text_only(result)) > 1024:
-            raise ValueError("Слишком длинная подпись для Telegram")
-    return result
+        footer += "\n🌐 Автоматический перевод."
+    if summary and summary.casefold() != title.casefold():
+        # Count the visible text in UTF-16 units, including the separator.
+        used = len(text_only(header + footer).encode("utf-16-le")) // 2
+        budget = max(0, 1000 - used)
+        if len(summary.encode("utf-16-le")) // 2 > budget:
+            short = summary.encode("utf-16-le")[:max(0, budget - 1) * 2].decode("utf-16-le", errors="ignore")
+            summary = short.rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        header += html.escape(summary) + "\n\n"
+    return header + footer
 
 
 def send_post(item):
-    # Final safeguard: never publish blocked sources even if selection changes.
     if quality.blocked_publisher(item["source"]) or quality.blocked_media_url(item["link"]):
         print(f"Пропуск запрещённого источника: {item['source']}")
         return False
-    # Use Telegram's publisher-native preview when possible. Google News RSS
-    # provides an aggregator link; resolve it to the original publisher page
-    # to show the story's own og:image without re-uploading copyrighted photos.
-    preview_link = None
-    if item.get("direct_feed") and quality.valid_news_url(item["link"]):
-        preview_link = item["link"]
-    elif article_preview.google_article_id(item["link"]):
-        preview_link = article_preview.resolve_publisher_url(item["link"], SESSION)
-        if preview_link:
-            item["link"] = preview_link  # Attribute the actual publisher, not Google.
-            print(f"Оригинальная статья для предпросмотра: {preview_link[:150]}")
-        else:
-            print("Ссылка Google News не раскрылась; используется карточка.")
-
-    if preview_link and quality.blocked_media_url(preview_link):
-        print(f"Пропуск: ссылка ведёт к исключённому СМИ: {item['source']}")
-        return False
-
-    if preview_link:
-        caption = make_caption(item)
-        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        try:
-            response = SESSION.post(api_url, json={
-                "chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
-                "link_preview_options": {
-                    "url": preview_link,
-                    "is_disabled": False,
-                    "prefer_large_media": True,
-                    "show_above_text": True,
-                },
-            }, timeout=35)
-            payload = response.json()
-            if response.ok and payload.get("ok"):
-                print(f"Опубликовано с предпросмотром оригинала: {item['source']}")
-                return True
-            print("Telegram отклонил предпросмотр; использую фирменную карточку.")
-        except (requests.RequestException, ValueError):
-            # A network timeout could occur after a successful Telegram send.
-            # Do not blindly retry: this might duplicate a published item.
-            raise RuntimeError("Неизвестен результат отправки предпросмотра; повтор отключён.") from None
-    # Never attach a generic stock image as if it documented this event.
-    # Fall back to a clearly branded title card when no article preview exists.
+    if article_preview.google_article_id(item["link"]):
+        publisher_url = article_preview.resolve_publisher_url(item["link"], SESSION)
+        if publisher_url and quality.blocked_media_url(publisher_url):
+            print(f"Пропуск: ссылка ведёт к исключённому СМИ: {item['source']}")
+            return False
+    item = dict(item, title=quality.without_links(item["title"]),
+                source=quality.without_links(item["source"]))
     image_file = make_card(item)
     caption = make_caption(item)
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -596,10 +552,8 @@ def send_post(item):
                     "Проверь TELEGRAM_CHAT_ID, права бота и формат подписи."
                 )
             return True
-        except requests.RequestException as exc:
-            if attempt == 2:
-                raise RuntimeError(f"Telegram: ошибка сети при отправке: {type(exc).__name__}") from None
-            time.sleep(3)
+        except requests.RequestException:
+            raise RuntimeError("Неизвестен результат отправки фото; повтор отключён.") from None
     raise RuntimeError("Telegram: превышен лимит запросов, сообщение не отправлено.")
 
 
@@ -677,6 +631,7 @@ def main():
             "id": item["id"], "ts": time.time(),
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "title": item["title"], "source": item["source"],
+            "original_title": item["original_title"], "link": item["link"],
             "topic": item["topic"],
         })
         # Сохраняем после каждого успешного поста.

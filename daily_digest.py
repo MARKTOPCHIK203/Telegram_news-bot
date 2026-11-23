@@ -194,10 +194,9 @@ def render_digest(items, now=None):
             continue
         parts.extend(("", f"{emoji} <b>{group}</b>"))
         for item in matching:
-            title = html.escape(item["title"][:225])
-            source = html.escape(item["source"][:55])
-            url = html.escape(item["link"], quote=True)
-            parts.append(f'• <a href="{url}">{title}</a> — по сообщению {source}; независимая проверка не проводилась')
+            title = html.escape(quality.without_links(item["title"])[:225])
+            source = html.escape(quality.without_links(item["source"])[:55])
+            parts.append(f'• {title} — по сообщению {source}; независимая проверка не проводилась')
     # Macro-regions only; this is a map of topics mentioned, not troop locations.
     regions = list(dict.fromkeys(x.get("region") for x in items if x.get("region")))
     parts.extend(("", "🗺 <b>Региональный контекст</b>"))
@@ -212,10 +211,9 @@ def render_digest(items, now=None):
     for side in ("Российская сторона", "Украинская сторона"):
         match = next((x for x in items if x["side"] == side), None)
         if match:
-            title = html.escape(match["title"][:150])
-            url = html.escape(match["link"], quote=True)
-            source = html.escape(match["source"][:55])
-            parts.append(f'• {side}: <a href="{url}">{title}</a> — по сообщению {source}')
+            title = html.escape(quality.without_links(match["title"])[:150])
+            source = html.escape(quality.without_links(match["source"])[:55])
+            parts.append(f'• {side}: {title} — по сообщению {source}')
         else:
             parts.append(f"• {side}: в разрешённых источниках недостаточно сведений.")
     # Objective, non-generative conclusion grounded solely in selected items.

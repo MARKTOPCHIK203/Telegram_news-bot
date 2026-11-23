@@ -118,7 +118,8 @@ class DailyDigestTests(unittest.TestCase):
         }
         result = render_digest([item], now)
         self.assertIn("&lt;состоятся&gt;", result)
-        self.assertIn("&amp;z=2", result)
+        self.assertNotIn("https://", result)
+        self.assertNotIn("href=", result)
 
 
 if __name__ == "__main__":

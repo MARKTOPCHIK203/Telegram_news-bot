@@ -27,6 +27,14 @@ STOPWORDS = frozenset((
 ))
 
 
+def without_links(value):
+    return re.sub(r"\s+", " ", re.sub(
+        r"(?:https?://|tg://|www\.)[^\s<>]+"
+        r"|(?<![\w.-])(?:[a-zа-яё0-9-]+\.)+(?:[a-z]{2,63}|рф)"
+        r"(?![\w-])(?::\d+)?(?:[/?#][^\s<>]*)?", "", value, flags=re.I
+    )).strip()
+
+
 def normalized_title(value):
     return " ".join(WORD_RE.findall((value or "").casefold().replace("ё", "е")))
 

@@ -58,7 +58,7 @@ jobs:
       - name: Run bot
         run: python bot.py
       - name: Save published IDs
-        if: success() && env.DRY_RUN != '1'
+        if: ${{ !cancelled() && env.DRY_RUN != '1' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
