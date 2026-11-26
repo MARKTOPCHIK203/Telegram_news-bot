@@ -248,12 +248,11 @@ def article_details(url, title):
                     return ""
         page = BeautifulSoup(bytes(body), "html.parser")
         container = page.select_one('[itemprop="articleBody"], .article__text, .doc__text') or page.find("article")
-        if container is None:
-            return ""
-        for element in container.select("aside, nav, footer, figure, script, style, [hidden]"):
-            element.decompose()
+        if container:
+            for element in container.select("aside, nav, footer, figure, script, style, [hidden]"):
+                element.decompose()
         paragraphs = []
-        for paragraph in container.find_all("p"):
+        for paragraph in container.find_all("p") if container else []:
             value = quality.without_links(paragraph.get_text(" ", strip=True))
             if len(value) < 65 or ARTICLE_BOILERPLATE.match(value):
                 continue
@@ -263,7 +262,10 @@ def article_details(url, title):
             if len(paragraphs) == 3:
                 break
         lead = " ".join(paragraphs)
-        if not quality.is_safe_title(lead) or quality.needs_editor_review(lead):
+        if not has_news_details(lead, title):
+            description = page.select_one('meta[property="og:description"], meta[name="description"]')
+            lead = quality.without_links(description.get("content", "")) if description else ""
+        if not has_news_details(lead, title) or not quality.is_safe_title(lead) or quality.needs_editor_review(lead):
             return ""
         return key_details(lead)
     except (requests.RequestException, ValueError):
@@ -618,25 +620,43 @@ def rss_photo(item):
     return None
 
 
-def send_post(item):
+def has_news_details(summary, title):
+    summary = quality.without_links(summary or "")
+    title = quality.without_links(title)
+    extra_words = quality.words(summary) - quality.words(title)
+    return (len(summary) >= 65 and len(extra_words) >= 6
+            and not ARTICLE_BOILERPLATE.match(summary)
+            and not quality.is_similar_story(summary, title))
+
+
+def prepare_post(item):
     if quality.blocked_publisher(item["source"]) or quality.blocked_media_url(item["link"]):
-        print(f"Пропуск запрещённого источника: {item['source']}")
-        return False
+        return None
     publisher_url = item["link"]
-    if article_preview.google_article_id(item["link"]):
-        publisher_url = article_preview.resolve_publisher_url(item["link"], SESSION)
+    if article_preview.google_article_id(publisher_url):
+        publisher_url = article_preview.resolve_publisher_url(publisher_url, SESSION)
         if publisher_url and quality.blocked_media_url(publisher_url):
-            print(f"Пропуск: ссылка ведёт к исключённому СМИ: {item['source']}")
-            return False
+            return None
     item = dict(item, title=quality.without_links(item["title"]),
                 source=quality.without_links(item["source"]))
-    if not item.get("summary"):
+    if not has_news_details(item.get("summary"), item["title"]):
         lead = article_details(publisher_url, item.get("original_title", item["title"]))
-        translated = translate_summary(lead)
-        if (translated and quality.russian_text_ok(translated)
-                and quality.is_safe_title(translated) and not quality.needs_editor_review(translated)):
-            item["original_summary"] = lead
-            item["summary"] = translated
+        item["original_summary"] = lead
+        item["summary"] = translate_summary(lead)
+    summary = quality.without_links(item.get("summary") or "")
+    if (not item["title"] or not has_news_details(summary, item["title"])
+            or not quality.russian_text_ok(summary) or not quality.is_safe_title(summary)
+            or quality.needs_editor_review(summary)):
+        return None
+    item["summary"] = key_details(summary)
+    return item
+
+
+def send_post(item):
+    item = prepare_post(item)
+    if not item:
+        print("Пропуск: нет содержательного текста новости.")
+        return False
     image_file = rss_photo(item)
     if image_file is not None:
         item["photo_note"] = "Фото из RSS источника"
@@ -696,7 +716,10 @@ def publish_daily_digest(entries, state):
     """Once-per-day source-attributed report after 12:00 Moscow time."""
     if not daily_digest.due_for_digest(state):
         return False
-    items = daily_digest.select_digest_stories(entries, PUBLISHERS)
+    items = [
+        prepared for item in daily_digest.select_digest_stories(entries, PUBLISHERS)
+        if (prepared := prepare_post(item))
+    ]
     message = daily_digest.render_digest(items)
     if not message:
         print("Ежедневная сводка: подходящих безопасных заголовков нет; повторим позже.")
@@ -749,7 +772,11 @@ def main():
             preview_items = daily_digest.select_digest_stories(entries, PUBLISHERS)
             print(f"[ПРОВЕРКА] Ежедневная сводка: {len(preview_items)} заголовков")
         for item in selected:
-            print(f"[ПРОВЕРКА] {item['source']}: {item['title']}\n{item['link']}")
+            prepared = prepare_post(item)
+            if prepared:
+                print(f"[ПРОВЕРКА] {make_caption(prepared, limit=4096)}")
+            else:
+                print("[ПРОВЕРКА] Пропуск: нет содержательного текста новости.")
         return
     try:
         publish_daily_digest(entries, state)

@@ -8,6 +8,7 @@ import html
 import re
 import time
 from datetime import datetime
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import news_quality as quality
@@ -136,7 +137,9 @@ def eligible(entry, allowed_sources, now):
             else "Украинская сторона" if any(x in lower for x in UKRAINIAN_SIDE)
             else "")
     return dict(title=title, source=source, link=link, published=ts,
-                category=category, side=side, region=region)
+                category=category, side=side, region=region,
+                summary=text_only(entry.get("summary") or entry.get("description") or "")
+                if (urlparse(link).hostname or "") != "news.google.com" else "")
 
 
 def select_digest_stories(entries, allowed_sources, now=None):
@@ -197,6 +200,11 @@ def render_digest(items, now=None):
             title = html.escape(quality.without_links(item["title"])[:225])
             source = html.escape(quality.without_links(item["source"])[:55])
             parts.append(f'• {title} — по сообщению {source}; независимая проверка не проводилась')
+            summary = quality.without_links(item.get("summary") or "")
+            if summary:
+                if len(summary) > 260:
+                    summary = summary[:259].rsplit(" ", 1)[0] + "…"
+                parts.append(html.escape(summary))
     # Macro-regions only; this is a map of topics mentioned, not troop locations.
     regions = list(dict.fromkeys(x.get("region") for x in items if x.get("region")))
     parts.extend(("", "🗺 <b>Региональный контекст</b>"))
@@ -245,7 +253,7 @@ def render_digest(items, now=None):
         "действий или «победителя дня» по этим сообщениям нельзя. "
         "Оперативные позиции, маршруты и неподтверждённые сведения о потерях опущены.",
         "",
-        "ℹ️ Ссылки на СМИ не гарантируют достоверность сообщений; "
+        "ℹ️ Названия СМИ не гарантируют достоверность сообщений; "
         "подборка не является независимой проверкой фактов.",
         "",
         "#СводкаДня #Новости #Россия #Украина",
