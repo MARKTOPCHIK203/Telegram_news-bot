@@ -451,12 +451,12 @@ def choose_news(entries, state):
         return item["published"] + detail_bonus
     fresh.sort(key=rank, reverse=True)
     older.sort(key=rank, reverse=True)
-    selected = quality.select_diverse(fresh, limit)
-    if len(selected) < limit:
-        remaining = [item for item in older if item["id"] not in {x["id"] for x in selected}]
-        selected += quality.select_diverse(remaining, limit - len(selected))
+    # Bound network work while giving rejected stories room to be replaced.
+    budget = limit * 4
+    ranked = quality.select_diverse(fresh, budget)
+    ranked += quality.select_diverse(older, budget - len(ranked))
     checked = []
-    for item in selected:
+    for item in ranked:
         original_title = item["title"]
         original_summary = item.get("summary", "")
         translated_title = translate_headline(original_title)
@@ -477,7 +477,13 @@ def choose_news(entries, state):
         item["title"] = translated_title
         item["original_summary"] = original_summary
         item["summary"] = translated_summary
-        checked.append(item)
+        prepared = prepare_post(item)
+        if prepared is None:
+            print("Пропуск: нет содержательного текста новости.")
+            continue
+        checked.append(prepared)
+        if len(checked) == limit:
+            break
     selected = checked
     print(f"Кандидатов: {len(candidates)}; свежих за 4 часа: {len(fresh)}; "
           f"выбрано: {len(selected)}; отфильтровано: {rejected}")
@@ -700,28 +706,27 @@ def prepare_post(item):
             return None
     item = dict(item, title=quality.without_links(item["title"]),
                 source=quality.without_links(item["source"]))
-    if len(item.get("summary") or "") < 230 or not has_news_details(item.get("summary"), item["title"]):
+    def verified_summary(value):
+        value = key_details(quality.without_links(value or ""))
+        if (has_news_details(value, item["title"]) and quality.russian_text_ok(value)
+                and quality.is_safe_title(value) and not quality.needs_editor_review(value)):
+            return value
+        return ""
+
+    summary = verified_summary(item.get("summary"))
+    if len(summary) < 230:
         lead = article_details(publisher_url, item.get("original_title", item["title"]))
-        translated = translate_summary(lead)
-        if (has_news_details(translated, item["title"]) and quality.russian_text_ok(translated)
-                and quality.is_safe_title(translated) and not quality.needs_editor_review(translated)
-                and len(translated) > len(item.get("summary") or "")):
+        translated = verified_summary(translate_summary(lead))
+        if len(translated) > len(summary):
             item["original_summary"] = lead
-            item["summary"] = translated
-    summary = quality.without_links(item.get("summary") or "")
-    if (not item["title"] or not has_news_details(summary, item["title"])
-            or not quality.russian_text_ok(summary) or not quality.is_safe_title(summary)
-            or quality.needs_editor_review(summary)):
+            summary = translated
+    if not item["title"] or not summary:
         return None
-    item["summary"] = key_details(summary)
+    item["summary"] = summary
     return item
 
 
 def send_post(item):
-    item = prepare_post(item)
-    if not item:
-        print("Пропуск: нет содержательного текста новости.")
-        return False
     image_file = rss_photo(item)
     if image_file is not None:
         item["photo_note"] = "Фото из RSS источника"
@@ -837,11 +842,7 @@ def main():
             preview_items = daily_digest.select_digest_stories(entries, PUBLISHERS)
             print(f"[ПРОВЕРКА] Ежедневная сводка: {len(preview_items)} заголовков")
         for item in selected:
-            prepared = prepare_post(item)
-            if prepared:
-                print(f"[ПРОВЕРКА] {make_caption(prepared, limit=4096)}")
-            else:
-                print("[ПРОВЕРКА] Пропуск: нет содержательного текста новости.")
+            print(f"[ПРОВЕРКА] {make_caption(item, limit=4096)}")
         return
     try:
         publish_daily_digest(entries, state)
