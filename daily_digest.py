@@ -138,8 +138,9 @@ def eligible(entry, allowed_sources, now):
             else "")
     return dict(title=title, source=source, link=link, published=ts,
                 category=category, side=side, region=region,
-                summary=text_only(entry.get("summary") or entry.get("description") or "")
-                if (urlparse(link).hostname or "") != "news.google.com" else "")
+                summary=entry.get("publisher_rss_summary") or (
+                    text_only(entry.get("summary") or entry.get("description") or "")
+                    if urlparse(link).hostname != "news.google.com" else ""))
 
 
 def select_digest_stories(entries, allowed_sources, now=None):

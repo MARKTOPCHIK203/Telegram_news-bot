@@ -13,7 +13,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import feedparser
 from bs4 import BeautifulSoup
@@ -174,6 +174,28 @@ def get_entries():
             print(f"{publisher} (прямой RSS): {len(direct.entries)} материалов")
         except (requests.RequestException, ValueError) as exc:
             print(f"Прямой RSS {publisher} недоступен: {type(exc).__name__}")
+    return attach_rss_details(items)
+
+
+def attach_rss_details(items):
+    """Recover descriptions from the same publisher's direct feed."""
+    def identity(entry):
+        source = text_only(entry.get("source", {}).get("title", ""))
+        title = text_only(entry.get("title", ""))
+        if title.casefold().endswith(" - " + source.casefold()):
+            title = title[:-(len(source) + 3)]
+        return source.casefold(), quality.normalized_title(title)
+
+    details = {}
+    for entry in items:
+        if entry.get("direct_feed"):
+            summary = extract_summary(entry, entry.get("title", ""))
+            if summary and not quality.needs_editor_review(summary):
+                details[identity(entry)] = summary
+
+    for entry in items:
+        if not entry.get("direct_feed") and (summary := details.get(identity(entry))):
+            entry["publisher_rss_summary"] = summary
     return items
 
 
@@ -196,6 +218,8 @@ def translate_headline(title):
 
 def extract_summary(entry, title):
     """Only substantive RSS descriptions; never manufacture context."""
+    if entry.get("publisher_rss_summary"):
+        return entry["publisher_rss_summary"]
     raw = quality.without_links(text_only(entry.get("summary") or entry.get("description") or ""))
     raw = re.sub(r"\s*Читать далее.*$", "", raw, flags=re.I).strip()
     if not raw or raw.casefold() == title.casefold():
@@ -235,19 +259,34 @@ def article_details(url, title):
     if not url:
         return ""
     try:
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.netloc.lower() not in ARTICLE_HOSTS:
-            return ""
-        with SESSION.get(url, timeout=7, stream=True, allow_redirects=False) as response:
-            if response.status_code != 200 or "text/html" not in response.headers.get("Content-Type", "").lower():
+        for attempt in range(3):
+            parsed = urlparse(url)
+            if (parsed.scheme != "https" or parsed.netloc.lower() not in ARTICLE_HOSTS
+                    or quality.blocked_media_url(url)):
                 return ""
-            body = bytearray()
-            for chunk in response.iter_content(65536):
-                body.extend(chunk)
-                if len(body) > 1_500_000:
+            with SESSION.get(url, timeout=7, stream=True, allow_redirects=False) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    target = response.headers.get("Location")
+                    if not target:
+                        return ""
+                    url = urljoin(url, target)
+                    continue
+                if response.status_code != 200 or "text/html" not in response.headers.get("Content-Type", "").lower():
                     return ""
+                body = bytearray()
+                for chunk in response.iter_content(65536):
+                    body.extend(chunk)
+                    if len(body) > 1_500_000:
+                        return ""
+                break
+        else:
+            return ""
         page = BeautifulSoup(bytes(body), "html.parser")
-        container = page.select_one('[itemprop="articleBody"], .article__text, .doc__text') or page.find("article")
+        container = page.select_one(
+            '[itemprop="articleBody"], [data-component="text-block"], '
+            '.article__text, .news__text, .doc__text'
+        )
+        container = page.find("article") or container
         if container:
             for element in container.select("aside, nav, footer, figure, script, style, [hidden]"):
                 element.decompose()
@@ -262,6 +301,28 @@ def article_details(url, title):
             if len(paragraphs) == 3:
                 break
         lead = " ".join(paragraphs)
+        if not has_news_details(lead, title):
+            for script in page.select('script[type="application/ld+json"]'):
+                try:
+                    metadata = json.loads(script.get_text())
+                except ValueError:
+                    continue
+                records = metadata if isinstance(metadata, list) else [metadata]
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    graph = record.get("@graph")
+                    for article in [record] + (graph if isinstance(graph, list) else []):
+                        if not isinstance(article, dict) or not isinstance(article.get("articleBody"), str):
+                            continue
+                        candidate = key_details(quality.without_links(text_only(article["articleBody"])))
+                        if has_news_details(candidate, title):
+                            lead = candidate
+                            break
+                    if has_news_details(lead, title):
+                        break
+                if has_news_details(lead, title):
+                    break
         if not has_news_details(lead, title):
             description = page.select_one('meta[property="og:description"], meta[name="description"]')
             lead = quality.without_links(description.get("content", "")) if description else ""
@@ -639,10 +700,14 @@ def prepare_post(item):
             return None
     item = dict(item, title=quality.without_links(item["title"]),
                 source=quality.without_links(item["source"]))
-    if not has_news_details(item.get("summary"), item["title"]):
+    if len(item.get("summary") or "") < 230 or not has_news_details(item.get("summary"), item["title"]):
         lead = article_details(publisher_url, item.get("original_title", item["title"]))
-        item["original_summary"] = lead
-        item["summary"] = translate_summary(lead)
+        translated = translate_summary(lead)
+        if (has_news_details(translated, item["title"]) and quality.russian_text_ok(translated)
+                and quality.is_safe_title(translated) and not quality.needs_editor_review(translated)
+                and len(translated) > len(item.get("summary") or "")):
+            item["original_summary"] = lead
+            item["summary"] = translated
     summary = quality.without_links(item.get("summary") or "")
     if (not item["title"] or not has_news_details(summary, item["title"])
             or not quality.russian_text_ok(summary) or not quality.is_safe_title(summary)
